@@ -2265,6 +2265,15 @@ COMMENT_START
  -----------------------------------------------------------------------------
 COMMENT_END
 
+NAME: ssl_max_threads
+IFDEF: USE_OPENSSL
+DEFAULT: 0
+TYPE: u_short
+LOC: Config.SSL.max_threads
+DOC_START
+	Maximum number of threads used for OpenSSL I/O.
+DOC_END
+
 NAME: http_port ascii_port
 TYPE: PortCfg
 DEFAULT: none

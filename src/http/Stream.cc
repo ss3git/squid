@@ -20,7 +20,7 @@
 #include "MessageDelayPools.h"
 #endif
 
-Http::Stream::Stream(const Comm::ConnectionPointer &aConn, ClientHttpRequest *aReq) :
+Http::Stream::Stream(const Comm::ConnectionPointer &aConn, ClientHttpRequest *aReq, int buf_size) :
     clientConnection(aConn),
     http(aReq),
     reply(nullptr),
@@ -29,7 +29,13 @@ Http::Stream::Stream(const Comm::ConnectionPointer &aConn, ClientHttpRequest *aR
     connRegistered_(false)
 {
     assert(http != nullptr);
-    memset(reqbuf, '\0', sizeof (reqbuf));
+    
+    buf_size = max(HTTP_REQBUF_SZ, buf_size);
+    buf_size = min(64*1024, buf_size);
+    reqbuf = (char *)xcalloc(buf_size, 1);
+
+    reqbuf_size = buf_size;
+    
     flags.deferred = 0;
     flags.parsed_ok = 0;
     deferredparams.node = nullptr;
@@ -46,6 +52,7 @@ Http::Stream::~Stream()
         }
     }
     httpRequestFree(http);
+    free(reqbuf);
 }
 
 void
@@ -115,7 +122,7 @@ Http::Stream::pullData()
     /* XXX: Next requested byte in the range sequence */
     /* XXX: length = getmaximumrangelenfgth */
     readBuffer.offset = getNextRangeOffset();
-    readBuffer.length = HTTP_REQBUF_SZ;
+    readBuffer.length = reqbuf_size;
     readBuffer.data = reqbuf;
     /* we may note we have reached the end of the wanted ranges */
     clientStreamRead(getTail(), http, readBuffer);

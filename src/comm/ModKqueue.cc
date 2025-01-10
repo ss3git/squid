@@ -63,17 +63,30 @@ static void commKQueueRegisterWithCacheManager(void);
 void
 kq_update_events(int fd, short filter, PF * handler)
 {
+    int read_fd = fd;
+    int write_fd = fd;
+    if ( fd_table[fd].ssl ){
+        if (fd_table[fd].ssl_th_info.ssl_threaded > 0){
+            read_fd = fd_table[fd].ssl_th_info.piped_read_fd;
+            write_fd = fd_table[fd].ssl_th_info.piped_write_fd;
+        }
+    }
+    
     PF *cur_handler;
     int kep_flags;
 
+    int setting_fd;
+    
     switch (filter) {
 
     case EVFILT_READ:
         cur_handler = fd_table[fd].read_handler;
+        setting_fd = read_fd;
         break;
 
     case EVFILT_WRITE:
         cur_handler = fd_table[fd].write_handler;
+        setting_fd = write_fd;
         break;
 
     default:
@@ -90,12 +103,17 @@ kq_update_events(int fd, short filter, PF * handler)
         kep = kqlst + kqoff;
 
         if (handler != NULL) {
-            kep_flags = (EV_ADD | EV_ONESHOT);
+            if ( fd_table[fd].ssl && filter == EVFILT_WRITE ){
+                kep_flags = (EV_ADD | EV_CLEAR);
+            }
+            else{
+                kep_flags = (EV_ADD | EV_ONESHOT);
+            }
         } else {
             kep_flags = EV_DELETE;
         }
 
-        EV_SET(kep, (uintptr_t) fd, filter, kep_flags, 0, 0, 0);
+        EV_SET(kep, (uintptr_t) setting_fd, filter, kep_flags, 0, 0, 0);
 
         /* Check if we've used the last one. If we have then submit them all */
         if (kqoff == kqmax - 1) {
@@ -236,6 +254,9 @@ Comm::DoSelect(int msec)
 
     for (i = 0; i < num; ++i) {
         int fd = (int) ke[i].ident;
+        if ( fd_table[fd].ssl && fd_table[fd].ssl_th_info.real_fd ){
+            fd = fd_table[fd].ssl_th_info.real_fd;
+        }
         PF *hdl = nullptr;
         fde *F = &fd_table[fd];
 
@@ -254,8 +275,20 @@ Comm::DoSelect(int msec)
 
         if (ke[i].filter == EVFILT_WRITE) {
             if ((hdl = F->write_handler) != NULL) {
-                F->write_handler = nullptr;
-                hdl(fd, F->write_data);
+                const int FILTER_SIZE = (fd_table[fd].ssl && fd_table[fd].ssl_th_info.real_fd)
+                						 ? fd_table[fd].ssl_th_info.ssl_max_write_size : 0;
+                if ( fd_table[fd].ssl && ke[i].data < FILTER_SIZE && !(ke[i].flags & EV_EOF) ){
+                    // skip unless write buffer has large enough space to reduce cpu load                	
+                    debugs(98, 6, "SSL ke[i].data: " << ke[i].data);
+                }
+                else{
+                    if ( fd_table[fd].ssl ){
+                        kq_update_events(fd, EVFILT_WRITE, NULL);
+                    }
+                    
+                    F->write_handler = nullptr;
+                    hdl(fd, F->write_data);
+                }
             }
         }
 

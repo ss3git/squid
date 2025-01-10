@@ -77,6 +77,136 @@ fdUpdateBiggest(int fd, int opening)
         --Biggest_FD;
 }
 
+void pipe_free_wrap(const int fd)
+{
+    fde *F = &fd_table[fd];
+
+    if (F->ssl_th_info.piped_read_fd){
+        memset(&fd_table[F->ssl_th_info.piped_read_fd], 0, sizeof(fde));
+        fdUpdateBiggest(F->ssl_th_info.piped_read_fd, 0);
+        --Number_FD;
+        
+        //memset(&fd_table[F->ssl_th_info.piped_write_fd_at_thread], 0, sizeof(fde));
+        //fdUpdateBiggest(F->ssl_th_info.piped_write_fd_at_thread, 0);
+        --Number_FD;
+        
+        F->ssl_th_info.piped_read_fd = 0;
+        F->ssl_th_info.piped_write_fd_at_thread = 0;
+    }
+
+    if (F->ssl_th_info.piped_write_fd){
+        memset(&fd_table[F->ssl_th_info.piped_write_fd], 0, sizeof(fde));
+        fdUpdateBiggest(F->ssl_th_info.piped_write_fd, 0);
+        --Number_FD;
+        
+        //memset(&fd_table[F->ssl_th_info.piped_read_fd_at_thread], 0, sizeof(fde));
+        //fdUpdateBiggest(F->ssl_th_info.piped_read_fd_at_thread, 0);
+        --Number_FD;
+        
+        F->ssl_th_info.piped_write_fd = 0;
+        F->ssl_th_info.piped_read_fd_at_thread = 0;
+    }
+}
+
+int pipe_open_wrap(const int fd, int pipe_read_fd[2], int pipe_write_fd[2])
+{
+    fde *F = &fd_table[fd];
+
+    static const int READ = 0;
+    static const int WRITE = 1;
+
+    int ret_R = pipe(pipe_read_fd);
+    int ret_W = pipe(pipe_write_fd);
+
+    if ( ret_R < 0 || ret_W < 0
+        || fd > FD_SETSIZE - 1
+        || pipe_read_fd[READ] > FD_SETSIZE - 1
+        || pipe_read_fd[WRITE] > FD_SETSIZE - 1
+        || pipe_write_fd[READ] > FD_SETSIZE - 1
+        || pipe_write_fd[WRITE] > FD_SETSIZE - 1 ){
+
+        if ( ret_R >= 0 ){
+           close(pipe_read_fd[READ]);
+           close(pipe_read_fd[WRITE]);
+        }
+        if ( ret_W >= 0 ){
+           close(pipe_write_fd[READ]);
+           close(pipe_write_fd[WRITE]);
+        }
+
+        return -1;
+    }
+
+    F->ssl_th_info.piped_read_fd = pipe_read_fd[READ];
+    F->ssl_th_info.piped_write_fd_at_thread = pipe_read_fd[WRITE];
+
+    F->ssl_th_info.piped_write_fd = pipe_write_fd[WRITE];
+    F->ssl_th_info.piped_read_fd_at_thread = pipe_write_fd[READ];
+
+    fcntl( F->ssl_th_info.piped_read_fd, F_SETFL,
+    	fcntl(F->ssl_th_info.piped_read_fd, F_GETFL) | O_NONBLOCK);
+    	 
+    fcntl( F->ssl_th_info.piped_write_fd, F_SETFL,
+    	fcntl(F->ssl_th_info.piped_write_fd, F_GETFL) | O_NONBLOCK);
+
+
+    fde *pipeF;
+
+    {   // used by child, closed by parent
+        pipeF = &fd_table[pipe_read_fd[READ]];
+        memset(pipeF, 0, sizeof(fde));
+
+        pipeF->flags.open = true;
+        pipeF->ssl = F->ssl;
+        pipeF->ssl_th_info.real_fd = fd;
+
+        pipeF->ssl_th_info.piped_write_fd_at_thread = pipe_read_fd[WRITE];
+
+        fdUpdateBiggest(pipe_read_fd[READ], 1);
+        ++Number_FD;
+    }
+
+    if(1){   // dummy data: only counter increment (closed by thread child)
+        pipeF = &fd_table[pipe_read_fd[WRITE]];
+        memset(pipeF, 0, sizeof(fde));
+
+        //pipeF->flags.open = true;
+        //pipeF->ssl = F->ssl;
+        //pipeF->ssl_th_info.real_fd = fd;
+
+        //fdUpdateBiggest(pipe_read_fd[WRITE], 1);
+        ++Number_FD;
+    }
+
+    if(1){   // dummy data: only counter increment (closed by thread child)
+        pipeF = &fd_table[pipe_write_fd[READ]];
+        memset(pipeF, 0, sizeof(fde));
+
+        //pipeF->flags.open = true;
+        //pipeF->ssl = F->ssl;
+        //pipeF->ssl_th_info.real_fd = fd;
+
+        //fdUpdateBiggest(pipe_write_fd[READ], 1);
+        ++Number_FD;
+    }
+
+    {   // used by child, closed by parent
+        pipeF = &fd_table[pipe_write_fd[WRITE]];
+        memset(pipeF, 0, sizeof(fde));
+
+        pipeF->flags.open = true;
+        pipeF->ssl = F->ssl;
+        pipeF->ssl_th_info.real_fd = fd;
+
+        pipeF->ssl_th_info.piped_read_fd_at_thread = pipe_write_fd[READ];
+
+        fdUpdateBiggest(pipe_write_fd[WRITE], 1);
+        ++Number_FD;
+    }
+
+    return 0;
+}
+
 void
 fd_close(int fd)
 {

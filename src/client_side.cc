@@ -1040,10 +1040,16 @@ ConnStateData::abortRequestParsing(const char *const uri)
     ClientHttpRequest *http = new ClientHttpRequest(this);
     http->req_sz = inBuf.length();
     http->setErrorUri(uri);
-    auto *context = new Http::Stream(clientConnection, http);
+    const int bufsize_request =
+#if USE_OPENSSL
+     (switchedToHttps() && Config.SSL.max_threads) ? Config.readAheadGap : HTTP_REQBUF_SZ;
+#else
+     HTTP_REQBUF_SZ;
+#endif
+    auto *context = new Http::Stream(clientConnection, http, bufsize_request);
     StoreIOBuffer tempBuffer;
     tempBuffer.data = context->reqbuf;
-    tempBuffer.length = HTTP_REQBUF_SZ;
+    tempBuffer.length = context->reqbuf_size;
     clientStreamInit(&http->client_stream, clientGetMoreData, clientReplyDetach,
                      clientReplyStatus, new clientReplyContext(http), clientSocketRecipient,
                      clientSocketDetach, context, tempBuffer);
@@ -1371,11 +1377,17 @@ ConnStateData::parseHttpRequest(const Http1::RequestParserPointer &hp)
     ClientHttpRequest *http = new ClientHttpRequest(this);
 
     http->req_sz = hp->messageHeaderSize();
-    Http::Stream *result = new Http::Stream(clientConnection, http);
+    const int bufsize_request =
+#if USE_OPENSSL
+     (switchedToHttps() && Config.SSL.max_threads) ? Config.readAheadGap : HTTP_REQBUF_SZ;
+#else
+     HTTP_REQBUF_SZ;
+#endif
+    Http::Stream *result = new Http::Stream(clientConnection, http, bufsize_request);
 
     StoreIOBuffer tempBuffer;
     tempBuffer.data = result->reqbuf;
-    tempBuffer.length = HTTP_REQBUF_SZ;
+    tempBuffer.length = result->reqbuf_size;
 
     ClientStreamData newServer = new clientReplyContext(http);
     ClientStreamData newClient = result;
@@ -3241,11 +3253,17 @@ ClientHttpRequest *
 ConnStateData::buildFakeRequest(SBuf &useHost, unsigned short usePort, const SBuf &payload)
 {
     ClientHttpRequest *http = new ClientHttpRequest(this);
-    Http::Stream *stream = new Http::Stream(clientConnection, http);
+    const int bufsize_request =
+#if USE_OPENSSL
+     (switchedToHttps() && Config.SSL.max_threads) ? Config.readAheadGap : HTTP_REQBUF_SZ;
+#else
+     HTTP_REQBUF_SZ;
+#endif
+    Http::Stream *stream = new Http::Stream(clientConnection, http, bufsize_request);
 
     StoreIOBuffer tempBuffer;
     tempBuffer.data = stream->reqbuf;
-    tempBuffer.length = HTTP_REQBUF_SZ;
+    tempBuffer.length = stream->reqbuf_size;
 
     ClientStreamData newServer = new clientReplyContext(http);
     ClientStreamData newClient = stream;
@@ -3859,6 +3877,23 @@ ConnStateData::handleIdleClientPinnedTlsRead()
         return false;
 
     char buf[1];
+
+    if (fd_table[pinning.serverConnection->fd].ssl_th_info.ssl_threaded > 0){
+        const int readResult =
+        		read(fd_table[pinning.serverConnection->fd].ssl_th_info.piped_read_fd, buf, sizeof(buf));
+
+        debugs(98, 2, "handleIdleClientPinnedTlsRead called for FD " 
+    							<< pinning.serverConnection->fd );
+
+        if (readResult > 0) {
+            debugs(98, 2, pinning.serverConnection << " TLS application data read");
+            return false;
+        }
+
+        debugs(98, 2, pinning.serverConnection << " TLS error ? " );
+        return false;
+    }
+
     const int readResult = SSL_read(ssl, buf, sizeof(buf));
 
     if (readResult > 0 || SSL_pending(ssl) > 0) {

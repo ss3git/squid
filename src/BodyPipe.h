@@ -97,7 +97,9 @@ public:
     typedef BodyConsumer Consumer;
     typedef BodyPipeCheckout Checkout;
 
-    enum { MaxCapacity = 64*1024 };
+	// +1: to carry 65536 bytes payload (typical pipe buffer size)
+	// (not a mandatory change for ssl multi-threadding)
+    enum { MaxCapacity = 64*1024 + 1 };
 
     friend class BodyPipeCheckout;
 

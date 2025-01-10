@@ -28,18 +28,493 @@ static Ipc::MemMap *SessionCache = nullptr;
 static const char *SessionCacheName = "tls_session_cache";
 #endif
 
+#ifdef ENABLE_SSL_THREAD
+
+#include <pthread.h>
+
+static const int READ = 0;
+static const int WRITE = 1;
+
+static int max_thread_counter = 0;
+static int thread_counter = 0;
+
+static void stop_signals(){
+    // copy from squidaio_thread_loop
+    sigset_t newSig;
+    sigemptyset(&newSig);
+    sigaddset(&newSig, SIGPIPE);
+    sigaddset(&newSig, SIGCHLD);
+    #if defined(_SQUID_LINUX_THREADS_)
+    sigaddset(&newSig, SIGQUIT);
+    sigaddset(&newSig, SIGTRAP);
+    #else
+    sigaddset(&newSig, SIGUSR1);
+    sigaddset(&newSig, SIGUSR2);
+    #endif
+    sigaddset(&newSig, SIGHUP);
+    sigaddset(&newSig, SIGTERM);
+    sigaddset(&newSig, SIGINT);
+    sigaddset(&newSig, SIGALRM);
+    pthread_sigmask(SIG_BLOCK, &newSig, nullptr);
+}
+
+static void *thread_reader_and_writer( void *args ){
+
+    // stop receiving signals
+    stop_signals();
+    
+    fde * const F_real = (fde *)args;
+    
+    fde * const F_R = &fd_table[F_real->ssl_th_info.piped_read_fd];
+    fde * const F_W = &fd_table[F_real->ssl_th_info.piped_write_fd];
+
+    const int real_fd = F_real->ssl_th_info.real_fd;
+
+    const int piped_read_fd_at_thread = F_W->ssl_th_info.piped_read_fd_at_thread;
+    const int piped_write_fd_at_thread = F_R->ssl_th_info.piped_write_fd_at_thread;
+    
+    SSL * const session = F_real->ssl.get();
+    pthread_mutex_t * const ssl_mutex_p = &F_real->ssl_th_info.ssl_mutex;
+
+    fcntl( piped_read_fd_at_thread, F_SETFL, fcntl(piped_read_fd_at_thread, F_GETFL) | O_NONBLOCK);
+    fcntl( piped_write_fd_at_thread, F_SETFL, fcntl(piped_write_fd_at_thread, F_GETFL) | O_NONBLOCK);
+
+
+    int destroying = 0;
+
+    const int TH_BUF_SIZE = 16*1024;
+    char buf_R[TH_BUF_SIZE];
+    char buf_W[TH_BUF_SIZE];
+
+    // named head & tail but not actually a ring buffer
+    int read_buf_to_pipe_head = 0;
+    int read_buf_to_pipe_tail = 0;
+
+    int write_buf_to_ssl_head = 0;
+    int write_buf_to_ssl_tail = 0;
+
+    int error_ssl_read_side = 0;
+    int error_ssl_write_side = 0;
+
+    int kill_read_if_empty = 0;
+    int kill_write_if_empty = 0;
+
+    while(1){
+        int did_something = 0;
+
+        if (!error_ssl_read_side){
+            if ( read_buf_to_pipe_head == read_buf_to_pipe_tail ){
+                // read from ssl
+                read_buf_to_pipe_head = 0;
+                read_buf_to_pipe_tail = 0;
+
+                int read_size = SSL_read(session, buf_R, TH_BUF_SIZE);
+
+                if ( read_size > 0 ){
+                    // read ok
+                    
+                    //int pending = SSL_pending(session);
+
+                    read_buf_to_pipe_head += read_size;
+                    did_something = 1;
+                }
+                else{
+                    // read ng
+                    int error = SSL_get_error(session, read_size);
+                    
+                    if ( kill_read_if_empty || !( error == SSL_ERROR_WANT_WRITE || error == SSL_ERROR_WANT_READ ) ){
+                        kill_read_if_empty = 0;
+
+                        error_ssl_read_side = 1;
+                        did_something = 1;
+                    }
+                }
+            }
+            
+            if ( read_buf_to_pipe_head != read_buf_to_pipe_tail ){
+                // write to pipe
+
+                int w_size = read_buf_to_pipe_head-read_buf_to_pipe_tail;
+                int w = write(piped_write_fd_at_thread, buf_R+read_buf_to_pipe_tail, w_size);
+
+                if ( w > 0 ){
+                    // ok
+
+                    read_buf_to_pipe_tail += w;
+                    did_something = 1;
+                }
+                else if ( w == 0 ){
+                    // ?
+
+                    error_ssl_read_side = 1;
+                    did_something = 1;                    
+                }
+                else{
+                    // ng
+
+                    if ( errno != EAGAIN ){
+                        error_ssl_read_side = 1;
+                        did_something = 1;
+                    }
+                }
+            }
+        }
+
+        if (!error_ssl_write_side){
+            if ( write_buf_to_ssl_head == write_buf_to_ssl_tail ){
+                // read from pipe
+                write_buf_to_ssl_head = 0;
+                write_buf_to_ssl_tail = 0;
+
+                int read_size = read(piped_read_fd_at_thread, buf_W, TH_BUF_SIZE);
+
+                if ( read_size > 0 ){
+                    // ok
+
+                    write_buf_to_ssl_head += read_size;
+                    did_something = 1;
+                }
+                else{
+                    // ng or eof
+
+                    if ( kill_write_if_empty || read_size == 0 || errno != EAGAIN ){
+                        kill_write_if_empty = 0;
+
+                        error_ssl_write_side = 1;
+                        did_something = 1;
+                    }
+                }
+            }
+
+            if ( write_buf_to_ssl_head != write_buf_to_ssl_tail ){
+                // write to ssl
+
+				// max. 16KB for a cycle
+                int w_size = min(16*1024, write_buf_to_ssl_head-write_buf_to_ssl_tail);
+                int w = SSL_write(session, buf_W+write_buf_to_ssl_tail, w_size);
+                if ( w > 0 ){
+                    // ok
+                    
+                    write_buf_to_ssl_tail += w;
+                    did_something = 1;
+                }
+                else{
+                    // ng
+
+                    int error = SSL_get_error(session, w);
+
+                    if ( !( error == SSL_ERROR_WANT_WRITE || error == SSL_ERROR_WANT_READ ) ){
+                        error_ssl_write_side = 1;
+                        did_something = 1;
+                    }
+                }
+            }
+        }
+
+        if ( error_ssl_read_side && error_ssl_write_side ){
+            destroying = 1;
+            break;
+        }
+
+        if ( error_ssl_read_side == 1 ){
+            shutdown(piped_write_fd_at_thread, SHUT_RDWR);
+            close(piped_write_fd_at_thread);
+
+            error_ssl_read_side++;
+            did_something = 1;
+        }
+
+        if ( error_ssl_write_side == 1 ){
+            pthread_mutex_lock(ssl_mutex_p);
+            if (!F_real->ssl_th_info.destroying){
+            	// shutdown (SSL_shutdown) is done by parent if destroying is set
+                shutdown(real_fd, SHUT_WR);
+            }
+            pthread_mutex_unlock(ssl_mutex_p);
+
+            shutdown(piped_read_fd_at_thread, SHUT_RDWR);
+            close(piped_read_fd_at_thread);
+
+            error_ssl_write_side++;
+            did_something = 1;
+        }
+
+        if (did_something){
+        	// do the cycle again
+            pthread_yield();
+        }
+        else {
+        	// select route
+        	
+        	//debugs() is not thread safe
+            //if ( error_ssl_read_side || error_ssl_write_side ){
+            //    debugs(98, 3, "in select, errors: " << error_ssl_read_side << " " << error_ssl_write_side);
+            //}
+            
+            if (destroying){
+                break;
+            }
+
+            pthread_mutex_lock(ssl_mutex_p);
+            if (F_real->ssl_th_info.destroying){
+                destroying = 1;
+            }
+            pthread_mutex_unlock(ssl_mutex_p);
+
+            if (destroying){
+                // last cycle
+                continue;
+            }
+            
+        
+            struct timeval tv;
+
+            const int max_fd = max(real_fd, max(piped_read_fd_at_thread, piped_write_fd_at_thread));
+    
+            fd_set rfds;
+            fd_set wfds;
+            fd_set efds;
+
+            FD_ZERO(&rfds);
+            FD_ZERO(&wfds);
+            FD_ZERO(&efds);
+            
+            FD_SET(real_fd, &efds);
+            
+            if (!error_ssl_read_side){
+                FD_SET(piped_write_fd_at_thread, &efds);
+
+                if ( read_buf_to_pipe_head == read_buf_to_pipe_tail ){
+                    FD_SET(real_fd, &rfds);
+                }
+                else{
+                    FD_SET(piped_write_fd_at_thread, &wfds);
+                }
+            }
+
+            if (!error_ssl_write_side){
+                FD_SET(piped_read_fd_at_thread, &efds);
+                
+                if ( write_buf_to_ssl_head == write_buf_to_ssl_tail ){
+                    FD_SET(piped_read_fd_at_thread, &rfds);
+                }
+                else{
+                    FD_SET(real_fd, &wfds);
+                }
+            }
+
+            tv.tv_sec = 5;
+            tv.tv_usec = 500000;
+
+            select(max_fd + 1, &rfds, &wfds, &efds, &tv);
+
+            if (FD_ISSET(real_fd, &efds)){
+                if (!error_ssl_read_side){
+                	//close piped_write_fd_at_thread after flushing my buffer
+                    kill_read_if_empty = 1;
+                }
+            }
+            else{
+                if (!error_ssl_read_side && FD_ISSET(piped_write_fd_at_thread, &efds)){
+                    error_ssl_read_side = 1;
+                }
+                if (!error_ssl_write_side && FD_ISSET(piped_read_fd_at_thread, &efds)){
+                	//shutdown real_fd after flushing my buffer
+                    kill_write_if_empty = 1;
+                }
+            }
+        }
+
+    }
+
+
+    if ( error_ssl_read_side <= 1 ){
+        shutdown(piped_write_fd_at_thread, SHUT_RDWR);
+        close(piped_write_fd_at_thread);
+        error_ssl_read_side++;
+    }
+
+    if ( error_ssl_write_side <= 1 ){
+        pthread_mutex_lock(ssl_mutex_p);
+        if (!F_real->ssl_th_info.destroying){
+        	// shutdown (SSL_shutdown) is done by parent if destroying is set
+            shutdown(real_fd, SHUT_WR);
+        }
+        pthread_mutex_unlock(ssl_mutex_p);
+        shutdown(piped_read_fd_at_thread, SHUT_RDWR);
+        close(piped_read_fd_at_thread);
+        error_ssl_write_side++;
+    }
+
+    return NULL;
+    
+}
+
+
+void destroy_child(int fd){
+
+    fde *F = &fd_table[fd];
+
+    if ( ! F->ssl ){
+        return;
+    }
+
+	if ( ! (F->ssl_th_info.ssl_threaded > 0) ){
+		return;
+	}
+	
+    int do_destroy = 0;
+    pthread_mutex_t *mutex_p = &F->ssl_th_info.ssl_mutex;
+
+	// set this flag by which the child thread starts finishing up
+    pthread_mutex_lock(mutex_p);
+    F->ssl_th_info.destroying++;
+    pthread_mutex_unlock(mutex_p);
+        
+        
+    debugs(98, 6, "write pipe close " << F->ssl_th_info.piped_write_fd);
+    shutdown(F->ssl_th_info.piped_write_fd, SHUT_RDWR);
+    close(F->ssl_th_info.piped_write_fd);
+    
+    debugs(98, 6, "read pipe close " << F->ssl_th_info.piped_read_fd);
+    shutdown(F->ssl_th_info.piped_read_fd, SHUT_RDWR);
+    close(F->ssl_th_info.piped_read_fd);
+        
+    debugs(98, 6, "destroy_child wait pthread_join for real_fd " << F->ssl_th_info.real_fd );
+            
+    pthread_join(F->ssl_th_info.th, NULL);
+    
+    debugs(98, 6, "pthread_join return ");
+
+    debugs(98, 5, "destroy_child do_destroy " << do_destroy);
+
+    thread_counter--;
+
+    debugs(98, 3, "current Threads: " << thread_counter << "/" << Config.SSL.max_threads);
+
+    if ( thread_counter == 0 ){
+        max_thread_counter = 0;
+        debugs(98, 2, "Zero SSL Threads: " << thread_counter);
+    }
+
+    pipe_free_wrap(fd);
+
+    pthread_mutex_destroy(mutex_p);
+    
+    memset(&F->ssl_th_info, 0, sizeof(F->ssl_th_info));
+}
+
+
+static void create_ssl_read_and_write_thread( int fd ){
+    int pipe_for_ssl_read[2];
+    int pipe_for_ssl_write[2];
+
+    if ( thread_counter >= Config.SSL.max_threads ){
+        if (Config.SSL.max_threads > 0) debugs(98, 3, "max number of thread has reached, FD " << fd );
+        return;
+    }
+
+    fde *F = &fd_table[fd];
+    
+    if (F->ssl_th_info.ssl_threaded)    // already created or failed
+        return;
+
+    int ret_pipe = pipe_open_wrap(fd, pipe_for_ssl_read, pipe_for_ssl_write);
+
+    // error check
+    if ( ret_pipe < 0 ){
+
+        debugs(98, 1, "thread creation fail " );
+
+        F->ssl_th_info.ssl_threaded = -1;
+
+        return;
+    }
+
+    debugs(98, 3, "pipe created (read): FD " << fd << " pipes "
+    	 << pipe_for_ssl_read[READ] << " " << pipe_for_ssl_read[WRITE]);
+    	 
+    debugs(98, 3, "pipe created (write): FD " << fd << " pipes "
+    	 << pipe_for_ssl_write[READ] << " " << pipe_for_ssl_write[WRITE]);
+
+    F->ssl_th_info.real_fd = fd;
+
+    F->ssl_th_info.ssl_threaded = 1;
+
+
+    pthread_t *th_p = &F->ssl_th_info.th;
+    pthread_attr_t *attr_p = &F->ssl_th_info.attr;
+
+    pthread_attr_init(attr_p);
+
+    pthread_mutex_init(&F->ssl_th_info.ssl_mutex, NULL);
+
+    int th_ret = pthread_create(th_p, attr_p, &thread_reader_and_writer, F);
+
+    if (th_ret != 0){
+        debugs(98, 1, "thread creation fail " );
+
+        close(F->ssl_th_info.piped_read_fd);
+        close(F->ssl_th_info.piped_write_fd_at_thread);
+        close(F->ssl_th_info.piped_write_fd);
+        close(F->ssl_th_info.piped_read_fd_at_thread);
+
+        pipe_free_wrap(fd);
+
+        pthread_mutex_destroy(&F->ssl_th_info.ssl_mutex);
+
+        return;
+    }
+
+    if ( ++thread_counter > max_thread_counter ){
+        max_thread_counter = thread_counter;
+        debugs(98, 2, "max SSL Threads: " << thread_counter);
+    }
+
+    debugs(98, 3, "Threads for FD " << fd << "/" << FD_SETSIZE << " launched" );
+    debugs(98, 3, "current Threads: " << thread_counter << "/" << Config.SSL.max_threads );
+
+    return;
+}
+#endif
+
 #if USE_OPENSSL || USE_GNUTLS
 static int
-tls_read_method(int fd, char *buf, int len)
+tls_read_method(int _fd, char *buf, int len)
 {
+    int fd = _fd;
+
     auto session = fd_table[fd].ssl.get();
     debugs(83, 3, "started for session=" << (void*)session);
 
 #if USE_OPENSSL
-    int i = SSL_read(session, buf, len);
+    int pending_fd = _fd;
+    int threaded = 0;
+    if (fd_table[_fd].ssl_th_info.ssl_threaded > 0){
+        fd = fd_table[_fd].ssl_th_info.piped_read_fd;
+        
+        if (fd_table[fd].ssl_th_info.real_fd){
+            pending_fd = fd_table[fd].ssl_th_info.real_fd;
+            threaded = 1;
+            debugs(98, 6, "now reading from pipe " << fd );
+        }
+        else{
+        	// bug
+            debugs(98, 1, "real_fd is not set!! " << fd );
+        }
+    }
+    int i = 0;
+    if (threaded){
+        i = read(fd, buf, len);
+    }
+    else{
+        i = SSL_read(session, buf, len);
+    }
 #elif USE_GNUTLS
     int i = gnutls_record_recv(session, buf, len);
 #endif
+
+    debugs(98, 4, "SSL_read " << fd << " " << len << " " << i << " bytes");
 
     if (i > 0) {
         debugs(83, 8, "TLS FD " << fd << " session=" << (void*)session << " " << i << " bytes");
@@ -47,21 +522,40 @@ tls_read_method(int fd, char *buf, int len)
     }
 
 #if USE_OPENSSL
-    if (i > 0 && SSL_pending(session) > 0) {
+    if ( !threaded && i > 0 && SSL_pending(session) > 0) {
 #elif USE_GNUTLS
     if (i > 0 && gnutls_record_check_pending(session) > 0) {
 #endif
         debugs(83, 2, "TLS FD " << fd << " is pending");
-        fd_table[fd].flags.read_pending = true;
+        fd_table[pending_fd].flags.read_pending = true;
     } else
-        fd_table[fd].flags.read_pending = false;
+        fd_table[pending_fd].flags.read_pending = false;
+	
+
+#ifdef ENABLE_SSL_THREAD
+    if ( fd_table[_fd].ssl_th_info.ssl_threaded == 0 && i > 0){
+        // read side thread creation
+
+        fd_table[_fd].ssl_th_info.ssl_traffic_counter_read += i;
+        
+        // avoid threading a session with too little traffic
+        if ( fd_table[_fd].ssl_th_info.ssl_traffic_counter_write > 0   // write must be started also
+             && i >= min(16*1024, HTTP_REQBUF_SZ) ){
+            
+            // TODO: if (!ktls_is_enabled || ssl_traffic_counter_read exceeds some threshold such as 10MB)
+            create_ssl_read_and_write_thread(_fd);
+        }
+    }
+#endif
 
     return i;
 }
 
 static int
-tls_write_method(int fd, const char *buf, int len)
+tls_write_method(int _fd, const char *buf, int len)
 {
+    int fd = _fd;
+
     auto session = fd_table[fd].ssl.get();
     debugs(83, 3, "started for session=" << (void*)session);
 
@@ -70,13 +564,57 @@ tls_write_method(int fd, const char *buf, int len)
         errno = ENOTCONN;
         return -1;
     }
+    int threaded = 0;
+    if (fd_table[_fd].ssl_th_info.ssl_threaded > 0){
+        fd = fd_table[_fd].ssl_th_info.piped_write_fd;
+
+        if (fd_table[fd].ssl_th_info.real_fd){
+            threaded = 1;
+            debugs(98, 6, "now writing to pipe " << fd );
+        }
+        else{
+        	// bug
+            debugs(98, 1, "real_fd is not set!! " << fd  );
+        }
+    }
 #endif
 
 #if USE_OPENSSL
-    int i = SSL_write(session, buf, len);
+    int i = 0;
+    if (threaded){
+        i = write(fd, buf, len);
+        if ( i > fd_table[_fd].ssl_th_info.ssl_max_write_size ){
+            debugs(98, 3, "ssl_max_write_size FD " << fd << ": "
+            	 << fd_table[_fd].ssl_th_info.ssl_max_write_size << " -> " << i );
+            fd_table[_fd].ssl_th_info.ssl_max_write_size = i;
+        }
+    }
+    else{
+        i = SSL_write(session, buf, len);
+    }
 #elif USE_GNUTLS
     int i = gnutls_record_send(session, buf, len);
 #endif
+
+    debugs(98, 4, "SSL_write " << fd << " " << len << " " << i << " bytes");
+
+
+#ifdef ENABLE_SSL_THREAD
+    if (!fd_table[_fd].ssl_th_info.ssl_threaded && i > 0){
+        // write side thread creation
+
+        fd_table[_fd].ssl_th_info.ssl_traffic_counter_write += i;
+
+        // avoid threading a session with too little traffic
+        if ( fd_table[_fd].ssl_th_info.ssl_traffic_counter_read > 0   // read must be started also
+             && i >= min(16*1024, HTTP_REQBUF_SZ) ){
+
+            // TODO: if (!ktls_is_enabled || ssl_traffic_counter_write exceeds some threshold such as 10MB)
+            create_ssl_read_and_write_thread(_fd);
+        }
+    }
+#endif
+
 
     if (i > 0) {
         debugs(83, 8, "TLS FD " << fd << " session=" << (void*)session << " " << i << " bytes");
@@ -152,6 +690,8 @@ CreateSession(const Security::ContextPointer &ctx, const Comm::ConnectionPointer
 #endif /* USE_GNUTLS */
 
             debugs(83, 5, "link FD " << fd << " to TLS session=" << (void*)session.get());
+
+            memset(&fd_table[fd].ssl_th_info, 0, sizeof(fd_table[fd].ssl_th_info));
 
             fd_table[fd].ssl = session;
             fd_table[fd].useBufferedIo(&tls_read_method, &tls_write_method);

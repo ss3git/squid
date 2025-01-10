@@ -179,6 +179,27 @@ public:
     /// What the I/O handlers are supposed to work on.
     CodeContextPointer codeContext;
 
+
+#if defined(USE_OPENSSL) && defined(USE_KQUEUE)
+#define ENABLE_SSL_THREAD
+#endif
+
+    struct {
+        int ssl_threaded;	// 0: non-thread, 1: threaded, -1: threading failed
+        int piped_read_fd;
+        int piped_write_fd;
+        int piped_read_fd_at_thread;
+        int piped_write_fd_at_thread;
+        uint64_t ssl_traffic_counter_read;
+        uint64_t ssl_traffic_counter_write;
+        int ssl_max_write_size;
+        int real_fd;
+        int destroying;
+        pthread_mutex_t ssl_mutex;
+        pthread_t th;
+        pthread_attr_t attr;
+    } ssl_th_info;
+
 private:
     // I/O methods connect Squid to the device/stack/library fde represents
     READ_HANDLER *readMethod_ = nullptr; ///< imports bytes into Squid

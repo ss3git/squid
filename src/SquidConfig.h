@@ -497,6 +497,7 @@ public:
         int session_ttl;
         size_t sessionCacheSize;
         char *certSignHash;
+        u_short max_threads;
     } SSL;
 #endif
 

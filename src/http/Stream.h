@@ -72,7 +72,7 @@ class Stream : public RefCountable
 
 public:
     /// construct with HTTP/1.x details
-    Stream(const Comm::ConnectionPointer &aConn, ClientHttpRequest *aReq);
+    Stream(const Comm::ConnectionPointer &aConn, ClientHttpRequest *aReq, int buf_size);
     ~Stream() override;
 
     /// register this stream with the Server
@@ -131,7 +131,8 @@ public: // HTTP/1.x state data
     Comm::ConnectionPointer clientConnection; ///< details about the client connection socket
     ClientHttpRequest *http;    /* we pretend to own that Job */
     HttpReply *reply;
-    char reqbuf[HTTP_REQBUF_SZ];
+    char * reqbuf;
+    int reqbuf_size;
     struct {
         unsigned deferred:1; ///< This is a pipelined request waiting for the current object to complete
         unsigned parsed_ok:1; ///< Was this parsed correctly?
