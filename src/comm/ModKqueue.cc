@@ -63,14 +63,8 @@ static void commKQueueRegisterWithCacheManager(void);
 void
 kq_update_events(int fd, short filter, PF * handler)
 {
-    int read_fd = fd;
-    int write_fd = fd;
-    if ( fd_table[fd].ssl ){
-        if (fd_table[fd].ssl_th_info.ssl_threaded > 0){
-            read_fd = fd_table[fd].ssl_th_info.piped_read_fd;
-            write_fd = fd_table[fd].ssl_th_info.piped_write_fd;
-        }
-    }
+    const int read_fd = SSL_GET_RD_FD(fd);
+    const int write_fd = SSL_GET_WR_FD(fd);
     
     PF *cur_handler;
     int kep_flags;
@@ -253,10 +247,7 @@ Comm::DoSelect(int msec)
         return Comm::OK;        /* No error.. */
 
     for (i = 0; i < num; ++i) {
-        int fd = (int) ke[i].ident;
-        if ( fd_table[fd].ssl && fd_table[fd].ssl_th_info.real_fd ){
-            fd = fd_table[fd].ssl_th_info.real_fd;
-        }
+        const int fd = SSL_GET_REAL_FD((int) ke[i].ident);
         PF *hdl = nullptr;
         fde *F = &fd_table[fd];
 

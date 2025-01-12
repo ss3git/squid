@@ -161,7 +161,12 @@ Comm::SetSelect(int fd, unsigned int type, PF * handler, void *client_data, time
     if (ev.events)
         ev.events |= EPOLLHUP | EPOLLERR;
 
-    if (ev.events != F->epoll_state) {
+    int force_register = 0;
+    if (SSL_THREADED(fd)){
+        force_register = ( epoll_ctl(kdpfd, EPOLL_CTL_DEL, fd, &ev) < 0 ) ? 0 : 1;
+    }
+
+    if (force_register || ev.events != F->epoll_state) {
         if (F->epoll_state) // already monitoring something.
             epoll_ctl_type = ev.events ? EPOLL_CTL_MOD : EPOLL_CTL_DEL;
         else
@@ -169,10 +174,37 @@ Comm::SetSelect(int fd, unsigned int type, PF * handler, void *client_data, time
 
         F->epoll_state = ev.events;
 
-        if (epoll_ctl(kdpfd, epoll_ctl_type, fd, &ev) < 0) {
-            int xerrno = errno;
-            debugs(5, DEBUG_EPOLL ? 0 : 8, "ERROR: epoll_ctl(," << epolltype_atoi(epoll_ctl_type) <<
-                   ",,): failed on FD " << fd << ": " << xstrerr(xerrno));
+        if (SSL_THREADED(fd)){
+            if ((ev.events & ~EPOLLOUT)){  // read
+                struct epoll_event ev_RD = ev;
+                ev_RD.data.fd = SSL_GET_RD_FD(fd);
+                ev_RD.events &= ~EPOLLOUT;
+                
+                if (epoll_ctl(kdpfd, EPOLL_CTL_MOD, SSL_GET_RD_FD(fd), &ev_RD) < 0){
+                    epoll_ctl(kdpfd, EPOLL_CTL_ADD, SSL_GET_RD_FD(fd), &ev_RD);
+                }
+            }
+            else{
+                epoll_ctl(kdpfd, EPOLL_CTL_DEL, SSL_GET_RD_FD(fd), &ev);
+            }
+            if ((ev.events & ~EPOLLIN)){ // write
+                struct epoll_event ev_WR = ev;
+                ev_WR.data.fd = SSL_GET_WR_FD(fd);
+                ev_WR.events &= ~EPOLLIN;
+                if (epoll_ctl(kdpfd, EPOLL_CTL_MOD, SSL_GET_WR_FD(fd), &ev_WR) < 0){
+                    epoll_ctl(kdpfd, EPOLL_CTL_ADD, SSL_GET_WR_FD(fd), &ev_WR);
+                }
+            }
+            else{
+                epoll_ctl(kdpfd, EPOLL_CTL_DEL, SSL_GET_WR_FD(fd), &ev);
+            }
+        }
+        else{
+            if (epoll_ctl(kdpfd, epoll_ctl_type, fd, &ev) < 0) {
+                int xerrno = errno;
+                debugs(5, DEBUG_EPOLL ? 0 : 8, "ERROR: epoll_ctl(," << epolltype_atoi(epoll_ctl_type) <<
+                    ",,): failed on FD " << fd << ": " << xstrerr(xerrno));
+            }
         }
     }
 
@@ -250,7 +282,7 @@ Comm::DoSelect(int msec)
         return Comm::TIMEOUT;       /* No error.. */
 
     for (i = 0, cevents = pevents; i < num; ++i, ++cevents) {
-        fd = cevents->data.fd;
+        fd = SSL_GET_REAL_FD(cevents->data.fd);
         F = &fd_table[fd];
         CodeContext::Reset(F->codeContext);
         debugs(5, DEBUG_EPOLL ? 0 : 8, "got FD " << fd << " events=" <<

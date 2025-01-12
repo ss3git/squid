@@ -80,9 +80,17 @@ fdUpdateBiggest(int fd, int opening)
 void pipe_free_wrap(const int fd)
 {
     fde *F = &fd_table[fd];
+    fde *pipeF;
 
     if (F->ssl_th_info.piped_read_fd){
-        memset(&fd_table[F->ssl_th_info.piped_read_fd], 0, sizeof(fde));
+        //memset(&fd_table[F->ssl_th_info.piped_read_fd], 0, sizeof(fde));
+        pipeF = &fd_table[F->ssl_th_info.piped_read_fd];
+        pipeF->flags.open = false;
+        pipeF->ssl = nullptr;
+        pipeF->ssl_th_info.real_fd = 0;
+
+        pipeF->ssl_th_info.piped_write_fd_at_thread = 0;
+        
         fdUpdateBiggest(F->ssl_th_info.piped_read_fd, 0);
         --Number_FD;
         
@@ -95,7 +103,14 @@ void pipe_free_wrap(const int fd)
     }
 
     if (F->ssl_th_info.piped_write_fd){
-        memset(&fd_table[F->ssl_th_info.piped_write_fd], 0, sizeof(fde));
+        //memset(&fd_table[F->ssl_th_info.piped_write_fd], 0, sizeof(fde));
+        pipeF = &fd_table[F->ssl_th_info.piped_write_fd];
+        pipeF->flags.open = false;
+        pipeF->ssl = nullptr;
+        pipeF->ssl_th_info.real_fd = 0;
+
+        pipeF->ssl_th_info.piped_read_fd_at_thread = 0;
+
         fdUpdateBiggest(F->ssl_th_info.piped_write_fd, 0);
         --Number_FD;
         
@@ -154,7 +169,7 @@ int pipe_open_wrap(const int fd, int pipe_read_fd[2], int pipe_write_fd[2])
 
     {   // used by child, closed by parent
         pipeF = &fd_table[pipe_read_fd[READ]];
-        memset(pipeF, 0, sizeof(fde));
+        //memset(pipeF, 0, sizeof(fde));
 
         pipeF->flags.open = true;
         pipeF->ssl = F->ssl;
@@ -167,8 +182,8 @@ int pipe_open_wrap(const int fd, int pipe_read_fd[2], int pipe_write_fd[2])
     }
 
     if(1){   // dummy data: only counter increment (closed by thread child)
-        pipeF = &fd_table[pipe_read_fd[WRITE]];
-        memset(pipeF, 0, sizeof(fde));
+        //pipeF = &fd_table[pipe_read_fd[WRITE]];
+        //memset(pipeF, 0, sizeof(fde));
 
         //pipeF->flags.open = true;
         //pipeF->ssl = F->ssl;
@@ -179,8 +194,8 @@ int pipe_open_wrap(const int fd, int pipe_read_fd[2], int pipe_write_fd[2])
     }
 
     if(1){   // dummy data: only counter increment (closed by thread child)
-        pipeF = &fd_table[pipe_write_fd[READ]];
-        memset(pipeF, 0, sizeof(fde));
+        //pipeF = &fd_table[pipe_write_fd[READ]];
+        //memset(pipeF, 0, sizeof(fde));
 
         //pipeF->flags.open = true;
         //pipeF->ssl = F->ssl;
@@ -192,7 +207,7 @@ int pipe_open_wrap(const int fd, int pipe_read_fd[2], int pipe_write_fd[2])
 
     {   // used by child, closed by parent
         pipeF = &fd_table[pipe_write_fd[WRITE]];
-        memset(pipeF, 0, sizeof(fde));
+        //memset(pipeF, 0, sizeof(fde));
 
         pipeF->flags.open = true;
         pipeF->ssl = F->ssl;

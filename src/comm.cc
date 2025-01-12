@@ -817,7 +817,6 @@ static void
 commStartTlsClose(const int fd)
 {
     #ifdef ENABLE_SSL_THREAD
-	extern void destroy_child(const int fd);
     destroy_child(fd);
     #endif
 

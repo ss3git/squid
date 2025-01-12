@@ -73,7 +73,7 @@ static void *thread_reader_and_writer( void *args ){
     const int piped_read_fd_at_thread = F_W->ssl_th_info.piped_read_fd_at_thread;
     const int piped_write_fd_at_thread = F_R->ssl_th_info.piped_write_fd_at_thread;
     
-    SSL * const session = F_real->ssl.get();
+    SSL * const session = (SSL*)F_real->ssl_th_info.ssl_session;
     pthread_mutex_t * const ssl_mutex_p = &F_real->ssl_th_info.ssl_mutex;
 
     fcntl( piped_read_fd_at_thread, F_SETFL, fcntl(piped_read_fd_at_thread, F_GETFL) | O_NONBLOCK);
@@ -95,6 +95,7 @@ static void *thread_reader_and_writer( void *args ){
 
     int error_ssl_read_side = 0;
     int error_ssl_write_side = 0;
+    int error_real_fd = 0;
 
     int kill_read_if_empty = 0;
     int kill_write_if_empty = 0;
@@ -241,7 +242,7 @@ static void *thread_reader_and_writer( void *args ){
 
         if (did_something){
         	// do the cycle again
-            pthread_yield();
+            sched_yield();
         }
         else {
         	// select route
@@ -266,7 +267,13 @@ static void *thread_reader_and_writer( void *args ){
                 continue;
             }
             
-        
+            if (error_real_fd){
+                // ssl side fd has gotten an error, but the read buffer to parent still has data.
+                // select will return immediately, so sleep a little for this rare condition.
+
+                usleep(100);
+            }
+    
             struct timeval tv;
 
             const int max_fd = max(real_fd, max(piped_read_fd_at_thread, piped_write_fd_at_thread));
@@ -309,6 +316,8 @@ static void *thread_reader_and_writer( void *args ){
             select(max_fd + 1, &rfds, &wfds, &efds, &tv);
 
             if (FD_ISSET(real_fd, &efds)){
+                error_real_fd = 1;
+
                 if (!error_ssl_read_side){
                 	//close piped_write_fd_at_thread after flushing my buffer
                     kill_read_if_empty = 1;
@@ -460,6 +469,8 @@ static void create_ssl_read_and_write_thread( int fd ){
     	 << pipe_for_ssl_write[READ] << " " << pipe_for_ssl_write[WRITE]);
 
     F->ssl_th_info.real_fd = fd;
+
+    F->ssl_th_info.ssl_session = F->ssl.get();
 
     F->ssl_th_info.ssl_threaded = 1;
 

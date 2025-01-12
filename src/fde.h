@@ -179,13 +179,9 @@ public:
     /// What the I/O handlers are supposed to work on.
     CodeContextPointer codeContext;
 
-
-#if defined(USE_OPENSSL) && defined(USE_KQUEUE)
-#define ENABLE_SSL_THREAD
-#endif
-
     struct {
         int ssl_threaded;	// 0: non-thread, 1: threaded, -1: threading failed
+        void *ssl_session;
         int piped_read_fd;
         int piped_write_fd;
         int piped_read_fd_at_thread;
@@ -206,6 +202,15 @@ private:
     READ_HANDLER *readMethod_ = nullptr; ///< imports bytes into Squid
     WRITE_HANDLER *writeMethod_ = nullptr; ///< exports Squid bytes
 };
+
+#if defined(USE_OPENSSL) && (defined(USE_KQUEUE) || defined(USE_EPOLL))
+#define ENABLE_SSL_THREAD
+#define SSL_THREADED(fd)    ((fd_table[fd].ssl) && (fd_table[fd].ssl_th_info.ssl_threaded > 0))
+#define SSL_GET_RD_FD(fd)   (SSL_THREADED(fd) ? fd_table[fd].ssl_th_info.piped_read_fd : (fd))
+#define SSL_GET_WR_FD(fd)   (SSL_THREADED(fd) ? fd_table[fd].ssl_th_info.piped_write_fd : (fd))
+#define SSL_GET_REAL_FD(fd) ((fd_table[fd].ssl && fd_table[fd].ssl_th_info.real_fd) ? fd_table[fd].ssl_th_info.real_fd : (fd))
+void destroy_child(int fd);
+#endif
 
 #define fd_table fde::Table
 
