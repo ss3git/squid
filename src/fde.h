@@ -198,6 +198,7 @@ public:
         pthread_mutex_t ssl_mutex;
         pthread_t th;
         pthread_attr_t attr;
+        int error_flag;
     } ssl_th_info;
 
 private:

@@ -327,6 +327,21 @@ static void *thread_reader_and_writer( void *args ){
 
     }
 
+    int parent_is_destroying_me;
+
+    pthread_mutex_lock(ssl_mutex_p);
+    parent_is_destroying_me = F_real->ssl_th_info.destroying;
+    pthread_mutex_unlock(ssl_mutex_p);    
+
+    if ( read_buf_to_pipe_head != read_buf_to_pipe_tail ){
+        F_real->ssl_th_info.error_flag |= 0x1;
+        if (!error_ssl_read_side) F_real->ssl_th_info.error_flag |= 0x4;
+    }
+    
+    if ( write_buf_to_ssl_head != write_buf_to_ssl_tail ){
+        F_real->ssl_th_info.error_flag |= 0x2;
+        if (!error_ssl_write_side) F_real->ssl_th_info.error_flag |= 0x4;
+    }
 
     if ( error_ssl_read_side <= 1 ){
         shutdown(piped_write_fd_at_thread, SHUT_RDWR);
@@ -335,12 +350,10 @@ static void *thread_reader_and_writer( void *args ){
     }
 
     if ( error_ssl_write_side <= 1 ){
-        pthread_mutex_lock(ssl_mutex_p);
-        if (!F_real->ssl_th_info.destroying){
+        if (!parent_is_destroying_me){
         	// shutdown (SSL_shutdown) is done by parent if destroying is set
             shutdown(real_fd, SHUT_WR);
         }
-        pthread_mutex_unlock(ssl_mutex_p);
         shutdown(piped_read_fd_at_thread, SHUT_RDWR);
         close(piped_read_fd_at_thread);
         error_ssl_write_side++;
@@ -363,7 +376,6 @@ void destroy_child(int fd){
 		return;
 	}
 	
-    int do_destroy = 0;
     pthread_mutex_t *mutex_p = &F->ssl_th_info.ssl_mutex;
 
 	// set this flag by which the child thread starts finishing up
@@ -386,7 +398,17 @@ void destroy_child(int fd){
     
     debugs(98, 6, "pthread_join return ");
 
-    debugs(98, 5, "destroy_child do_destroy " << do_destroy);
+    const int error_level = (F->ssl_th_info.error_flag & 0x4) ? 1 : 3;
+
+    if ( F->ssl_th_info.error_flag & 0x1 ){
+        debugs(98, error_level, "child was terminated before flushing read buffer "
+             << F->ssl_th_info.real_fd << ", " << F->ssl_th_info.error_flag);
+    }
+
+    if ( F->ssl_th_info.error_flag & 0x2 ){
+        debugs(98, error_level, "child was terminated before flushing write buffer "
+             << F->ssl_th_info.real_fd << ", " << F->ssl_th_info.error_flag);
+    }
 
     thread_counter--;
 
