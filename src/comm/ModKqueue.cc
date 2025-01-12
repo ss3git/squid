@@ -276,7 +276,7 @@ Comm::DoSelect(int msec)
         if (ke[i].filter == EVFILT_WRITE) {
             if ((hdl = F->write_handler) != NULL) {
                 const int FILTER_SIZE = (fd_table[fd].ssl && fd_table[fd].ssl_th_info.real_fd)
-                						 ? fd_table[fd].ssl_th_info.ssl_max_write_size : 0;
+                			? (fd_table[fd].ssl_th_info.ssl_max_write_size & 0xffffc000) : 0; // round to multiple of 16KB
                 if ( fd_table[fd].ssl && ke[i].data < FILTER_SIZE && !(ke[i].flags & EV_EOF) ){
                     // skip unless write buffer has large enough space to reduce cpu load                	
                     debugs(98, 6, "SSL ke[i].data: " << ke[i].data);
