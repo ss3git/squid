@@ -533,18 +533,20 @@ tls_read_method(int _fd, char *buf, int len)
 	
 
 #ifdef ENABLE_SSL_THREAD
-    if ( fd_table[_fd].ssl_th_info.ssl_threaded == 0 && i > 0){
+    if (fd_table[_fd].ssl_th_info.ssl_threaded == 0 && i > 0){
         // read side thread creation
 
         fd_table[_fd].ssl_th_info.ssl_traffic_counter_read += i;
         
         // avoid threading a session with too little traffic
-        if ( fd_table[_fd].ssl_th_info.ssl_traffic_counter_write > 0   // write must be started also
-             && i >= min(16*1024, HTTP_REQBUF_SZ) ){
+        if ( i >= min(16*1024, HTTP_REQBUF_SZ) ){
             
             // TODO: if (!ktls_is_enabled || ssl_traffic_counter_read exceeds some threshold such as 10MB)
             create_ssl_read_and_write_thread(_fd);
         }
+    }
+    else if (fd_table[_fd].ssl_th_info.ssl_traffic_counter_read == 0){
+        fd_table[_fd].ssl_th_info.ssl_traffic_counter_read = 1; // need for POST case
     }
 #endif
 
@@ -560,10 +562,6 @@ tls_write_method(int _fd, const char *buf, int len)
     debugs(83, 3, "started for session=" << (void*)session);
 
 #if USE_OPENSSL
-    if (!SSL_is_init_finished(session)) {
-        errno = ENOTCONN;
-        return -1;
-    }
     int threaded = 0;
     if (fd_table[_fd].ssl_th_info.ssl_threaded > 0){
         fd = fd_table[_fd].ssl_th_info.piped_write_fd;
@@ -576,6 +574,10 @@ tls_write_method(int _fd, const char *buf, int len)
         	// bug
             debugs(98, 1, "real_fd is not set!! " << fd  );
         }
+    }
+    else if (!SSL_is_init_finished(session)) {
+        errno = ENOTCONN;
+        return -1;
     }
 #endif
 
