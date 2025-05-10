@@ -38,8 +38,8 @@ Security::HandshakeParser::HandshakeParser(MessageSource) STUB
 bool Security::HandshakeParser::parseHello(const SBuf &) STUB_RETVAL(false)
 
 #include "security/Io.h"
-Security::IoResult Security::Accept(Comm::Connection &) STUB_RETVAL(IoResult(IoResult::ioError))
-Security::IoResult Security::Connect(Comm::Connection &) STUB_RETVAL(IoResult(IoResult::ioError))
+Security::IoResult Security::Accept(Comm::Connection &, bool thread) STUB_RETVAL(IoResult(IoResult::ioError))
+Security::IoResult Security::Connect(Comm::Connection &, bool thread) STUB_RETVAL(IoResult(IoResult::ioError))
 void Security::ForgetErrors() STUB
 
 #include "security/KeyData.h"

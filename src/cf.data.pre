@@ -2265,6 +2265,36 @@ COMMENT_START
  -----------------------------------------------------------------------------
 COMMENT_END
 
+NAME: ssl_accept_thread
+COMMENT: on|off
+TYPE: onoff
+IFDEF: USE_OPENSSL
+DEFAULT: on
+LOC: Config.SSL.enable_accept_thread
+DOC_START
+	for debug 
+DOC_END
+
+NAME: ssl_connect_thread
+COMMENT: on|off
+TYPE: onoff
+IFDEF: USE_OPENSSL
+DEFAULT: on
+LOC: Config.SSL.enable_connect_thread
+DOC_START
+	for debug 
+DOC_END
+
+NAME: ssl_read_write_thread
+COMMENT: on|off
+TYPE: onoff
+IFDEF: USE_OPENSSL
+DEFAULT: on
+LOC: Config.SSL.enable_read_write_thread
+DOC_START
+	for debug 
+DOC_END
+
 NAME: ssl_max_threads
 IFDEF: USE_OPENSSL
 DEFAULT: 0

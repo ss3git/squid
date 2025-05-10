@@ -110,10 +110,10 @@ kq_update_events(int fd, short filter, PF * handler)
         EV_SET(kep, (uintptr_t) setting_fd, filter, kep_flags, 0, 0, 0);
 
         /* Check if we've used the last one. If we have then submit them all */
-        if (kqoff == kqmax - 1) {
+        if (kep_flags == EV_DELETE || kqoff == kqmax - 1) {
             int ret;
 
-            ret = kevent(kq, kqlst, kqmax, nullptr, 0, &zero_timespec);
+            ret = kevent(kq, kqlst, kqoff+1, nullptr, 0, &zero_timespec);
             /* jdc -- someone needs to do error checking... */
 
             if (ret == -1) {
@@ -224,7 +224,10 @@ Comm::DoSelect(int msec)
     poll_time.tv_nsec = (msec % 1000) * 1000000;
 
     for (;;) {
+        // temporarily unlock
+        SSL_MT_MUTEX_UNLOCK();
         num = kevent(kq, kqlst, kqoff, ke, KE_LENGTH, &poll_time);
+        SSL_MT_MUTEX_LOCK();
         ++statCounter.select_loops;
         kqoff = 0;
 
@@ -233,6 +236,8 @@ Comm::DoSelect(int msec)
 
         if (ignoreErrno(errno))
             break;
+
+        debugs(98, 1, "kevent errno " << errno);
 
         getCurrentTime();
 
@@ -261,12 +266,14 @@ Comm::DoSelect(int msec)
             if ((hdl = F->read_handler) != NULL) {
                 F->read_handler = nullptr;
                 hdl(fd, F->read_data);
+                SSL_MT_MUTEX_UNLOCK();
+                SSL_MT_MUTEX_LOCK();
             }
         }
 
         if (ke[i].filter == EVFILT_WRITE) {
             if ((hdl = F->write_handler) != NULL) {
-                const int FILTER_SIZE = (fd_table[fd].ssl && fd_table[fd].ssl_th_info.real_fd)
+                const int FILTER_SIZE = (SSL_THREADED(fd) && (int)ke[i].ident == SSL_GET_WR_FD(fd))
                 			? (fd_table[fd].ssl_th_info.ssl_max_write_size & 0xffffc000) : 0; // round to multiple of 16KB
                 if ( fd_table[fd].ssl && ke[i].data < FILTER_SIZE && !(ke[i].flags & EV_EOF) ){
                     // skip unless write buffer has large enough space to reduce cpu load                	
@@ -279,6 +286,8 @@ Comm::DoSelect(int msec)
                     
                     F->write_handler = nullptr;
                     hdl(fd, F->write_data);
+                	SSL_MT_MUTEX_UNLOCK();
+                	SSL_MT_MUTEX_LOCK();                    
                 }
             }
         }

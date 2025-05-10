@@ -28,9 +28,12 @@ static Ipc::MemMap *SessionCache = nullptr;
 static const char *SessionCacheName = "tls_session_cache";
 #endif
 
-#ifdef ENABLE_SSL_THREAD
+#if ENABLE_SSL_THREAD
+//#define ENABLE_SSL_THREAD_ALWAYS 1  /* for debug only */
 
-#include <pthread.h>
+#if ENABLE_SSL_THREAD
+pthread_mutex_t SSL_global_mutex = PTHREAD_MUTEX_INITIALIZER; //PTHREAD_RECURSIVE_MUTEX_INITIALIZER_NP;
+#endif
 
 static const int READ = 0;
 static const int WRITE = 1;
@@ -76,8 +79,18 @@ static void *thread_reader_and_writer( void *args ){
     SSL * const session = (SSL*)F_real->ssl_th_info.ssl_session;
     pthread_mutex_t * const ssl_mutex_p = &F_real->ssl_th_info.ssl_mutex;
 
+    const int ktls_write = 
+    #if defined(SSL_OP_ENABLE_KTLS) && _SQUID_FREEBSD_
+        ((SSL_get_options(session) & SSL_OP_ENABLE_KTLS) != 0) && (BIO_flush(SSL_get_wbio(session)) == 1);
+    #else
+        0;
+    #endif
+
     fcntl( piped_read_fd_at_thread, F_SETFL, fcntl(piped_read_fd_at_thread, F_GETFL) | O_NONBLOCK);
     fcntl( piped_write_fd_at_thread, F_SETFL, fcntl(piped_write_fd_at_thread, F_GETFL) | O_NONBLOCK);
+
+    const int ssl_read_ahead = SSL_get_read_ahead(session);
+    SSL_set_read_ahead(session, 1);
 
 
     int destroying = 0;
@@ -190,9 +203,15 @@ static void *thread_reader_and_writer( void *args ){
             if ( write_buf_to_ssl_head != write_buf_to_ssl_tail ){
                 // write to ssl
 
-				// max. 16KB for a cycle
-                int w_size = min(16*1024, write_buf_to_ssl_head-write_buf_to_ssl_tail);
-                int w = SSL_write(session, buf_W+write_buf_to_ssl_tail, w_size);
+                const int w_size = write_buf_to_ssl_head-write_buf_to_ssl_tail;
+                int w;
+                if (ktls_write){
+                    w = write(real_fd, buf_W+write_buf_to_ssl_tail, w_size);
+                }
+                else{
+				    // max. 16KB for a cycle
+                    w = SSL_write(session, buf_W+write_buf_to_ssl_tail, min(16*1024, w_size));
+                }
                 if ( w > 0 ){
                     // ok
                     
@@ -256,11 +275,12 @@ static void *thread_reader_and_writer( void *args ){
                 break;
             }
 
-            pthread_mutex_lock(ssl_mutex_p);
+            // no rlock
+            //pthread_mutex_lock(ssl_mutex_p);
             if (F_real->ssl_th_info.destroying){
                 destroying = 1;
             }
-            pthread_mutex_unlock(ssl_mutex_p);
+            //pthread_mutex_unlock(ssl_mutex_p);
 
             if (destroying){
                 // last cycle
@@ -368,20 +388,25 @@ static void *thread_reader_and_writer( void *args ){
         error_ssl_write_side++;
     }
 
+    SSL_set_read_ahead(session, ssl_read_ahead);
+
     return NULL;
     
 }
-
 
 void destroy_child(int fd){
 
     fde *F = &fd_table[fd];
 
     if ( ! F->ssl ){
+        debugs(98, 1, "destroy_child for non-ssl session " << fd);
+        memset(&F->ssl_th_info, 0, sizeof(F->ssl_th_info));
         return;
     }
 
 	if ( ! (F->ssl_th_info.ssl_threaded > 0) ){
+        //debugs(98, 1, "destroy_child for non-threaded session " << fd);
+        memset(&F->ssl_th_info, 0, sizeof(F->ssl_th_info));
 		return;
 	}
 	
@@ -391,21 +416,47 @@ void destroy_child(int fd){
     pthread_mutex_lock(mutex_p);
     F->ssl_th_info.destroying++;
     pthread_mutex_unlock(mutex_p);
+
+    PF *read_handler = F->read_handler;
+    PF *write_handler = F->write_handler;
+    void *read_data = F->read_data;
+    void *write_data = F->write_data;
+    time_t timeout = F->timeout;
+
+    if ( read_handler != NULL || write_handler != NULL ){
+        debugs(98, 3, "relocating handlers to parent" << read_handler << " " << write_handler);
+    }
+
+    Comm::SetSelect(fd, COMM_SELECT_READ, nullptr, nullptr, 0);
+    Comm::SetSelect(fd, COMM_SELECT_WRITE, nullptr, nullptr, 0);
         
-        
-    debugs(98, 6, "write pipe close " << F->ssl_th_info.piped_write_fd);
-    shutdown(F->ssl_th_info.piped_write_fd, SHUT_RDWR);
-    close(F->ssl_th_info.piped_write_fd);
+    if (F->ssl_th_info.piped_write_fd){
+        debugs(98, 6, "write pipe close " << F->ssl_th_info.piped_write_fd);
+        shutdown(F->ssl_th_info.piped_write_fd, SHUT_RDWR);
+        close(F->ssl_th_info.piped_write_fd);
+    }
     
-    debugs(98, 6, "read pipe close " << F->ssl_th_info.piped_read_fd);
-    shutdown(F->ssl_th_info.piped_read_fd, SHUT_RDWR);
-    close(F->ssl_th_info.piped_read_fd);
+    if (F->ssl_th_info.piped_read_fd){
+	    debugs(98, 6, "read pipe close " << F->ssl_th_info.piped_read_fd);
+	    shutdown(F->ssl_th_info.piped_read_fd, SHUT_RDWR);
+	    close(F->ssl_th_info.piped_read_fd);
+	}
+
+    #if ENABLE_SSL_THREAD_CONNECT
+    const int join_log_level = 6;
+    #else
+    const int join_log_level = 6;
+    #endif
         
-    debugs(98, 6, "destroy_child wait pthread_join for real_fd " << F->ssl_th_info.real_fd );
-            
+    debugs(98, join_log_level, "destroy_child wait pthread_join for real_fd " << F->ssl_th_info.real_fd );
+
+    SSL_MT_MUTEX_UNLOCK();	// unlock
+
     pthread_join(F->ssl_th_info.th, NULL);
-    
-    debugs(98, 6, "pthread_join return ");
+ 
+    SSL_MT_MUTEX_LOCK();	// lock
+
+    debugs(98, join_log_level, "pthread_join return ");
 
     const int error_level = (F->ssl_th_info.error_flag & 0x4) ? 1 : 3;
 
@@ -421,27 +472,190 @@ void destroy_child(int fd){
 
     thread_counter--;
 
-    debugs(98, 3, "current Threads: " << thread_counter << "/" << Config.SSL.max_threads);
+    debugs(98, 2, "current Threads: " << thread_counter << "/" << Config.SSL.max_threads);
 
     if ( thread_counter == 0 ){
         max_thread_counter = 0;
         debugs(98, 2, "Zero SSL Threads: " << thread_counter);
     }
 
-    pipe_free_wrap(fd);
+    pipe_free_wrap(fd, READ);
+    pipe_free_wrap(fd, WRITE);
 
     pthread_mutex_destroy(mutex_p);
     
     memset(&F->ssl_th_info, 0, sizeof(F->ssl_th_info));
+
+    Comm::SetSelect(fd, COMM_SELECT_READ, read_handler, read_data, 0);
+    Comm::SetSelect(fd, COMM_SELECT_WRITE, write_handler, write_data, 0);
+    F->timeout = timeout;
 }
 
+static void thread_accept_connect_common( void *args, int type ){
 
-static void create_ssl_read_and_write_thread( int fd ){
+    // stop receiving signals
+    stop_signals();
+
+    fde * const F_real = (fde *)args;
+    
+    fde * const F_R = &fd_table[F_real->ssl_th_info.piped_read_fd];
+    fde * const F_W = &fd_table[F_real->ssl_th_info.piped_write_fd];
+
+    const int real_fd = F_real->ssl_th_info.real_fd;
+
+    const int piped_read_fd_at_thread = F_W->ssl_th_info.piped_read_fd_at_thread;
+    const int piped_write_fd_at_thread = F_R->ssl_th_info.piped_write_fd_at_thread;
+    
+    SSL * const session = (SSL*)F_real->ssl_th_info.ssl_session;
+    //pthread_mutex_t * const ssl_mutex_p = &F_real->ssl_th_info.ssl_mutex;
+
+    int keep_accepted_thread = F_real->ssl_th_info.keep_accepted_thread;
+
+    fcntl( piped_read_fd_at_thread, F_SETFL, fcntl(piped_read_fd_at_thread, F_GETFL) | O_NONBLOCK);
+    fcntl( piped_write_fd_at_thread, F_SETFL, fcntl(piped_write_fd_at_thread, F_GETFL) | O_NONBLOCK);
+
+    int exiting = 0;
+    while(!exiting){
+        if (F_real->ssl_th_info.destroying){
+            exiting = 1;
+            child_debugs(98, 6, "trace destroying ");
+            break;
+        }
+
+        int ssl_call_result;
+        if ( type == 1 ){
+            child_debugs(98, 6, "trace SSL_accept " << real_fd);
+            ssl_call_result = SSL_accept(session);
+        }
+        else{
+            child_debugs(98, 6, "trace SSL_connect " << real_fd);
+            ssl_call_result = SSL_connect(session);
+        }
+        
+        if ( ssl_call_result == 1 ){
+            child_debugs(98, 6, "trace ssl_call_result == 1 " << real_fd);
+            int ret = write(piped_write_fd_at_thread, &ssl_call_result, sizeof(int));
+            if ( ret <= 0 ){
+                child_debugs(98, 6, "trace write ret " << ret << " " << real_fd);
+            }
+            exiting = 2;
+            child_debugs(98, 6, "trace ssl_call_result == 1 exiting " << real_fd);
+            break;
+        }
+
+        child_debugs(98, 6, "trace SSL_get_error " << real_fd);
+        const int ssl_eno = SSL_get_error(session, ssl_call_result);
+
+        fd_set rfds;
+        fd_set wfds;
+        fd_set efds;
+
+        struct timeval tv;
+
+        tv.tv_sec = 5;
+        tv.tv_usec = 500000;
+
+        FD_ZERO(&rfds);
+        FD_ZERO(&wfds);
+        FD_ZERO(&efds);
+
+        FD_SET(real_fd, &efds);
+        FD_SET(piped_read_fd_at_thread, &efds);
+        FD_SET(piped_write_fd_at_thread, &efds);
+        
+        FD_SET(piped_read_fd_at_thread, &rfds);
+        
+        const int max_fd = max(real_fd, max(piped_read_fd_at_thread, piped_write_fd_at_thread));
+        
+        switch (ssl_eno)
+		{
+			case SSL_ERROR_NONE:
+                child_debugs(98, 6, "trace SSL_ERROR_NONE " << real_fd);
+				break;
+				
+			case SSL_ERROR_WANT_READ:
+			case SSL_ERROR_WANT_WRITE:
+                {
+                    child_debugs(98, 6, "trace ssl_eno " << ssl_eno << " " << real_fd);
+
+                    if ( ssl_eno == SSL_ERROR_WANT_READ )  FD_SET(real_fd, &rfds);
+                    if ( ssl_eno == SSL_ERROR_WANT_WRITE ) FD_SET(real_fd, &wfds);
+                    
+                    child_debugs(98, 6, "trace select " << real_fd);
+                    select(max_fd + 1, &rfds, &wfds, &efds, &tv);
+                    child_debugs(98, 6, "trace select out " << real_fd);
+                
+                    if (FD_ISSET(real_fd, &efds)
+                    		|| FD_ISSET(piped_read_fd_at_thread, &efds)
+                    		|| FD_ISSET(piped_write_fd_at_thread, &efds)){
+                    			
+                        int ret = write(piped_write_fd_at_thread, &ssl_call_result, sizeof(int));
+                        if ( ret <= 0 ){
+                            child_debugs(98, 6, "trace write ret " << ret << " " << real_fd);
+                        }
+                        exiting = 1;
+                    }
+                }
+                break;
+                
+			default:
+                {
+                    child_debugs(98, 6, "trace default " << real_fd);
+
+                    int ret = write(piped_write_fd_at_thread, &ssl_call_result, sizeof(int));
+                    if ( ret <= 0 ){
+                        child_debugs(98, 6, "trace write ret " << ret << " " << real_fd);
+                    }
+                    exiting = 1;
+                }           
+                break;
+		}
+    }
+
+	#if ENABLE_SSL_THREAD_ACCEPT_REUSE
+    if ( keep_accepted_thread && type == 1 && exiting == 2 ){
+    	// wait
+        fcntl( piped_read_fd_at_thread, F_SETFL, fcntl(piped_read_fd_at_thread, F_GETFL) & ~O_NONBLOCK);
+
+        int dummy;
+        int ret = read(piped_read_fd_at_thread, &dummy, sizeof(int));
+        if ( ret <= 0 ){
+            // debugs() cannot be used in a thread
+        }
+        thread_reader_and_writer(args);
+        return;
+    }
+    #endif
+
+    child_debugs(98, 6, "trace shutdown piped_write_fd_at_thread  " << real_fd);
+
+    shutdown(piped_write_fd_at_thread, SHUT_RDWR);
+    close(piped_write_fd_at_thread);
+
+    child_debugs(98, 6, "trace shutdown piped_read_fd_at_thread  " << real_fd);
+
+    shutdown(piped_read_fd_at_thread, SHUT_RDWR);
+    close(piped_read_fd_at_thread);
+
+    return;
+}
+
+static void *thread_accepter( void *args ){
+    thread_accept_connect_common(args, 1);
+    return NULL;
+}
+
+static void *thread_connecter( void *args ){
+    thread_accept_connect_common(args, 2);
+    return NULL;
+}
+
+static void create_ssl_thread_common( int fd, void *(*start_routine) (void *) ){
     int pipe_for_ssl_read[2];
     int pipe_for_ssl_write[2];
 
     if ( thread_counter >= Config.SSL.max_threads ){
-        if (Config.SSL.max_threads > 0) debugs(98, 3, "max number of thread has reached, FD " << fd );
+        if (Config.SSL.max_threads > 0) debugs(98, 1, "max number of thread has reached, FD " << fd );
         return;
     }
 
@@ -468,9 +682,28 @@ static void create_ssl_read_and_write_thread( int fd ){
     debugs(98, 3, "pipe created (write): FD " << fd << " pipes "
     	 << pipe_for_ssl_write[READ] << " " << pipe_for_ssl_write[WRITE]);
 
+    PF *read_handler = F->read_handler;
+    PF *write_handler = F->write_handler;
+    void *read_data = F->read_data;
+    void *write_data = F->write_data;
+    time_t timeout = F->timeout;
+
+    if ( read_handler != NULL || write_handler != NULL ){
+        debugs(98, 3, "relocating handlers to child" << read_handler << " " << write_handler);
+    }
+
+    Comm::SetSelect(fd, COMM_SELECT_READ, nullptr, nullptr, 0);
+    Comm::SetSelect(fd, COMM_SELECT_WRITE, nullptr, nullptr, 0);
+
     F->ssl_th_info.real_fd = fd;
 
     F->ssl_th_info.ssl_session = F->ssl.get();
+
+    #if ENABLE_SSL_THREAD_ACCEPT_REUSE
+    if ( Config.SSL.enable_read_write_thread ){
+        F->ssl_th_info.keep_accepted_thread = 1;
+    }
+    #endif
 
     F->ssl_th_info.ssl_threaded = 1;
 
@@ -482,7 +715,7 @@ static void create_ssl_read_and_write_thread( int fd ){
 
     pthread_mutex_init(&F->ssl_th_info.ssl_mutex, NULL);
 
-    int th_ret = pthread_create(th_p, attr_p, &thread_reader_and_writer, F);
+    int th_ret = pthread_create(th_p, attr_p, start_routine, F);
 
     if (th_ret != 0){
         debugs(98, 1, "thread creation fail " );
@@ -492,9 +725,18 @@ static void create_ssl_read_and_write_thread( int fd ){
         close(F->ssl_th_info.piped_write_fd);
         close(F->ssl_th_info.piped_read_fd_at_thread);
 
-        pipe_free_wrap(fd);
+        pipe_free_wrap(fd, READ);
+        pipe_free_wrap(fd, WRITE);
 
         pthread_mutex_destroy(&F->ssl_th_info.ssl_mutex);
+
+        memset(&F->ssl_th_info, 0, sizeof(F->ssl_th_info));
+        
+        F->ssl_th_info.ssl_threaded = -1;
+        
+        Comm::SetSelect(fd, COMM_SELECT_READ, read_handler, read_data, 0);
+        Comm::SetSelect(fd, COMM_SELECT_WRITE, write_handler, write_data, 0);
+        F->timeout = timeout;
 
         return;
     }
@@ -503,11 +745,36 @@ static void create_ssl_read_and_write_thread( int fd ){
         max_thread_counter = thread_counter;
         debugs(98, 2, "max SSL Threads: " << thread_counter);
     }
+    
+    Comm::SetSelect(fd, COMM_SELECT_READ, read_handler, read_data, 0);
+    Comm::SetSelect(fd, COMM_SELECT_WRITE, write_handler, write_data, 0);
+    F->timeout = timeout;
 
     debugs(98, 3, "Threads for FD " << fd << "/" << FD_SETSIZE << " launched" );
     debugs(98, 3, "current Threads: " << thread_counter << "/" << Config.SSL.max_threads );
 
     return;
+}
+
+void create_ssl_read_and_write_thread( int fd ){
+    if (Config.SSL.enable_read_write_thread){
+        create_ssl_thread_common(fd, thread_reader_and_writer);
+        debugs(98, 6, "create_ssl_read_and_write_thread for " << fd << " " << SSL_THREADED(fd));
+    }
+}
+
+void create_ssl_accept_thread( int fd ){
+    if (Config.SSL.enable_accept_thread){
+        create_ssl_thread_common(fd, thread_accepter);
+        debugs(98, 6, "create_ssl_accept_thread for " << fd << " " << SSL_THREADED(fd));
+    }
+}
+
+void create_ssl_connect_thread( int fd ){
+    if (Config.SSL.enable_connect_thread){
+        create_ssl_thread_common(fd, thread_connecter);
+        debugs(98, 6, "create_ssl_connect_thread for " << fd << " " << SSL_THREADED(fd));
+    }
 }
 #endif
 
@@ -521,6 +788,16 @@ tls_read_method(int _fd, char *buf, int len)
     debugs(83, 3, "started for session=" << (void*)session);
 
 #if USE_OPENSSL
+    #if ENABLE_SSL_THREAD_ALWAYS
+    if (fd_table[_fd].ssl_th_info.ssl_threaded == 0){
+        // read side thread creation
+
+        fd_table[_fd].ssl_th_info.ssl_traffic_counter_read = 1;
+        
+        create_ssl_read_and_write_thread(_fd);
+    }
+    #endif
+
     int pending_fd = _fd;
     int threaded = 0;
     if (fd_table[_fd].ssl_th_info.ssl_threaded > 0){
@@ -565,7 +842,7 @@ tls_read_method(int _fd, char *buf, int len)
         fd_table[pending_fd].flags.read_pending = false;
 	
 
-#ifdef ENABLE_SSL_THREAD
+#if ENABLE_SSL_THREAD
     if (fd_table[_fd].ssl_th_info.ssl_threaded == 0 && i > 0){
         // read side thread creation
 
@@ -634,7 +911,7 @@ tls_write_method(int _fd, const char *buf, int len)
     debugs(98, 4, "SSL_write " << fd << " " << len << " " << i << " bytes");
 
 
-#ifdef ENABLE_SSL_THREAD
+#if ENABLE_SSL_THREAD
     if (!fd_table[_fd].ssl_th_info.ssl_threaded && i > 0){
         // write side thread creation
 
@@ -643,8 +920,7 @@ tls_write_method(int _fd, const char *buf, int len)
         // avoid threading a session with too little traffic
         if ( fd_table[_fd].ssl_th_info.ssl_traffic_counter_read > 0   // read must be started also
              && i >= min(16*1024, HTTP_REQBUF_SZ) ){
-
-            // TODO: if (!ktls_is_enabled || ssl_traffic_counter_write exceeds some threshold such as 10MB)
+        
             create_ssl_read_and_write_thread(_fd);
         }
     }
@@ -863,6 +1139,8 @@ store_session_cb(SSL *, SSL_SESSION *session)
     if (!SessionCache)
         return 0;
 
+    SSL_MT_MUTEX_IF_CHILD_LOCK();
+
     debugs(83, 5, "Request to store SSL_SESSION");
 
     SSL_SESSION_set_timeout(session, Config.SSL.session_ttl);
@@ -887,6 +1165,9 @@ store_session_cb(SSL *, SSL_SESSION *session)
         SessionCache->closeForWriting(pos);
         debugs(83, 5, "wrote an SSL_SESSION entry of size " << lenRequired << " at pos " << pos);
     }
+
+    SSL_MT_MUTEX_IF_CHILD_UNLOCK();
+
     return 0;
 }
 
@@ -895,6 +1176,9 @@ remove_session_cb(SSL_CTX *, SSL_SESSION *sessionID)
 {
     if (!SessionCache)
         return;
+
+
+    SSL_MT_MUTEX_IF_CHILD_LOCK();
 
     debugs(83, 5, "Request to remove corrupted or not valid SSL_SESSION");
     int pos;
@@ -907,6 +1191,8 @@ remove_session_cb(SSL_CTX *, SSL_SESSION *sessionID)
         // The OpenSSL library will reject it when we try to use it
         SessionCache->free(pos);
     }
+
+    SSL_MT_MUTEX_IF_CHILD_UNLOCK();
 }
 
 static SSL_SESSION *
@@ -919,6 +1205,8 @@ get_session_cb(SSL *, unsigned char *sessionID, int len, int *copy)
     if (!SessionCache)
         return nullptr;
 
+    SSL_MT_MUTEX_IF_CHILD_LOCK();
+        
     const unsigned int *p = reinterpret_cast<const unsigned int *>(sessionID);
     debugs(83, 5, "Request to search for SSL_SESSION of len: " <<
            len << p[0] << ":" << p[1]);
@@ -943,6 +1231,9 @@ get_session_cb(SSL *, unsigned char *sessionID, int len, int *copy)
     // the reference count is not incremented and therefore the session must
     // not be explicitly freed with SSL_SESSION_free(3).
     *copy = 0;
+
+   SSL_MT_MUTEX_IF_CHILD_UNLOCK();
+
     return session;
 }
 

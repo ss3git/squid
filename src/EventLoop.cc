@@ -15,6 +15,7 @@
 #include "EventLoop.h"
 #include "fatal.h"
 #include "time/Engine.h"
+#include "ssl_mt.h"
 
 EventLoop *EventLoop::Running = nullptr;
 
@@ -28,6 +29,8 @@ EventLoop::EventLoop() : errcount(0), last_loop(false), timeService(nullptr),
 void
 EventLoop::checkEngine(AsyncEngine * engine, bool const primary)
 {
+	SSL_MT_MUTEX_LOCK();
+	
     int requested_delay;
 
     if (!primary)
@@ -35,6 +38,8 @@ EventLoop::checkEngine(AsyncEngine * engine, bool const primary)
     else
         requested_delay = engine->checkEvents(loop_delay);
 
+    SSL_MT_MUTEX_UNLOCK();
+    
     if (requested_delay < 0)
         switch (requested_delay) {
 
@@ -141,7 +146,12 @@ EventLoop::runOnce()
 bool
 EventLoop::dispatchCalls()
 {
+    SSL_MT_MUTEX_LOCK();
+
     bool dispatchedSome = AsyncCallQueue::Instance().fire();
+    
+    SSL_MT_MUTEX_UNLOCK();
+
     return dispatchedSome;
 }
 

@@ -30,6 +30,15 @@ int Debug::Levels[MAX_DEBUG_SECTIONS];
 char *Debug::cache_log = nullptr;
 int Debug::rotateNumber = -1;
 
+#if ENABLE_SSL_THREAD
+pthread_t Debug::SSL_global_locking_thread = 0;
+int Debug::SSL_global_locking_count = 0;
+#endif
+
+#ifdef SSL_THREAD_DEBUG
+pthread_mutex_t Debug::SSL_debug_mutex = PTHREAD_MUTEX_INITIALIZER;
+#endif
+
 /// a counter related to the number of debugs() calls
 using DebugRecordCount = uint64_t;
 

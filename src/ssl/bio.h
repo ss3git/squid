@@ -41,6 +41,7 @@ public:
 
     /// Reads data from socket
     virtual int read(char *buf, int size, BIO *table);
+    virtual bool needReadLock();
 
     /// Flushes any buffered data to socket.
     /// The Ssl::Bio does not buffer any data, so this method has nothing to do
@@ -82,6 +83,7 @@ public:
     /// If the holdRead flag is true then it does not write any data
     /// to socket and sets the "read retry" flag of the BIO to true
     int read(char *buf, int size, BIO *table) override;
+    bool needReadLock() override;
     /// Prevents or allow writing on socket.
     void hold(bool h) {holdRead_ = holdWrite_ = h;}
 
@@ -134,6 +136,7 @@ public:
     /// The ServerBio version of the Ssl::Bio::read method
     /// If the record flag is set then append the data to the rbuf member
     int read(char *buf, int size, BIO *table) override;
+    bool needReadLock() override;
     /// The ServerBio version of the Ssl::Bio::flush method.
     /// Flushes any buffered data
     void flush(BIO *table) override;

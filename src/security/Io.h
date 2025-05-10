@@ -52,10 +52,10 @@ operator <<(std::ostream &os, const IoResult &result)
 }
 
 /// accept a TLS connection over the specified to-Squid transport connection
-IoResult Accept(Comm::Connection &transport);
+IoResult Accept(Comm::Connection &transport, bool thread);
 
 /// establish a TLS connection over the specified from-Squid transport connection
-IoResult Connect(Comm::Connection &transport);
+IoResult Connect(Comm::Connection &transport, bool thread);
 
 /// clear any errors that a TLS library has accumulated in its global storage
 void ForgetErrors();

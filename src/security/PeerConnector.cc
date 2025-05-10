@@ -216,7 +216,7 @@ Security::PeerConnector::negotiate()
     if (fd_table[fd].closing())
         return;
 
-    const auto result = Security::Connect(*serverConnection());
+    const auto result = Security::Connect(*serverConnection(), true );
 
 #if USE_OPENSSL
     auto &sconn = *fd_table[fd].ssl;

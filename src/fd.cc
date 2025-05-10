@@ -77,12 +77,15 @@ fdUpdateBiggest(int fd, int opening)
         --Biggest_FD;
 }
 
-void pipe_free_wrap(const int fd)
+void pipe_free_wrap(const int fd, const int direction)
 {
+    static const int READ = 0;
+    static const int WRITE = 1;
+    
     fde *F = &fd_table[fd];
     fde *pipeF;
 
-    if (F->ssl_th_info.piped_read_fd){
+    if (direction == READ && F->ssl_th_info.piped_read_fd){
         //memset(&fd_table[F->ssl_th_info.piped_read_fd], 0, sizeof(fde));
         pipeF = &fd_table[F->ssl_th_info.piped_read_fd];
         pipeF->flags.open = false;
@@ -102,7 +105,7 @@ void pipe_free_wrap(const int fd)
         F->ssl_th_info.piped_write_fd_at_thread = 0;
     }
 
-    if (F->ssl_th_info.piped_write_fd){
+    if (direction == WRITE && F->ssl_th_info.piped_write_fd){
         //memset(&fd_table[F->ssl_th_info.piped_write_fd], 0, sizeof(fde));
         pipeF = &fd_table[F->ssl_th_info.piped_write_fd];
         pipeF->flags.open = false;

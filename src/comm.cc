@@ -816,7 +816,8 @@ old_comm_reset_close(int fd)
 static void
 commStartTlsClose(const int fd)
 {
-    #ifdef ENABLE_SSL_THREAD
+    #if ENABLE_SSL_THREAD
+    debugs(98, 6, "commStartTlsClose call destroy_child " << fd);
     destroy_child(fd);
     #endif
 

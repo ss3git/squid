@@ -260,7 +260,10 @@ Comm::DoSelect(int msec)
         msec = max_poll_time;
 
     for (;;) {
+        // temporarily unlock
+        SSL_MT_MUTEX_UNLOCK();
         num = epoll_wait(kdpfd, pevents, SQUID_MAXFD, msec);
+        SSL_MT_MUTEX_LOCK();
         ++ statCounter.select_loops;
 
         if (num >= 0)

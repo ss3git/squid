@@ -98,6 +98,8 @@ ssl_ask_password(SSL_CTX * context, const char * prompt)
 static RSA *
 ssl_temp_rsa_cb(SSL *, int, int keylen)
 {
+    SSL_MT_MUTEX_IF_CHILD_LOCK();
+
     static RSA *rsa_512 = nullptr;
     static RSA *rsa_1024 = nullptr;
     static BIGNUM *e = nullptr;
@@ -110,6 +112,9 @@ ssl_temp_rsa_cb(SSL *, int, int keylen)
             debugs(83, DBG_IMPORTANT, "ERROR: ssl_temp_rsa_cb: Failed to set exponent for key " << keylen);
             BN_free(e);
             e = nullptr;
+
+            SSL_MT_MUTEX_IF_CHILD_UNLOCK();
+
             return nullptr;
         }
     }
@@ -148,11 +153,17 @@ ssl_temp_rsa_cb(SSL *, int, int keylen)
 
     default:
         debugs(83, DBG_IMPORTANT, "ERROR: ssl_temp_rsa_cb: Unexpected key length " << keylen);
+
+        SSL_MT_MUTEX_IF_CHILD_UNLOCK();
+
         return nullptr;
     }
 
     if (rsa == NULL) {
         debugs(83, DBG_IMPORTANT, "ERROR: ssl_temp_rsa_cb: Failed to generate key " << keylen);
+
+        SSL_MT_MUTEX_IF_CHILD_UNLOCK();
+
         return nullptr;
     }
 
@@ -162,6 +173,8 @@ ssl_temp_rsa_cb(SSL *, int, int keylen)
 
         debugs(83, DBG_IMPORTANT, "Generated ephemeral RSA key of length " << keylen);
     }
+
+    SSL_MT_MUTEX_IF_CHILD_UNLOCK();
 
     return rsa;
 }
@@ -261,6 +274,8 @@ bool Ssl::checkX509ServerValidity(X509 *cert, const char *server)
 static int
 ssl_verify_cb(int ok, X509_STORE_CTX * ctx)
 {
+    //SSL_MT_MUTEX_IF_CHILD_LOCK();
+    
     // preserve original ctx->error before SSL_ calls can overwrite it
     Security::ErrorCode error_no = ok ? SSL_ERROR_NONE : X509_STORE_CTX_get_error(ctx);
 
@@ -397,6 +412,8 @@ ssl_verify_cb(int ok, X509_STORE_CTX * ctx)
         else
             debugs(83, 2, "failed to store a " << *peer_cert << " error detail: " << *edp);
     }
+
+    //SSL_MT_MUTEX_IF_CHILD_UNLOCK();
 
     return ok;
 }
@@ -1337,8 +1354,16 @@ VerifyCtxCertificates(X509_STORE_CTX *ctx, STACK_OF(X509) *extraCerts)
 static int
 untrustedToStoreCtx_cb(X509_STORE_CTX *ctx, void *)
 {
+
+    SSL_MT_MUTEX_IF_CHILD_LOCK();
+ 
     debugs(83, 4, "Try to use pre-downloaded intermediate certificates");
-    return VerifyCtxCertificates(ctx, nullptr);
+
+    const int ret = VerifyCtxCertificates(ctx, nullptr);
+    
+    SSL_MT_MUTEX_IF_CHILD_UNLOCK();
+    
+    return ret;
 }
 
 void

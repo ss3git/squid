@@ -14,6 +14,7 @@
 #include "base/Here.h"
 // XXX should be mem/forward.h once it removes dependencies on typedefs.h
 #include "mem/AllocatorProxy.h"
+#include "ssl_mt.h"
 
 #include <iostream>
 #undef assert
@@ -75,7 +76,30 @@ public:
     /// whether debugging the given section and the given level produces output
     static bool Enabled(const int section, const int level)
     {
+        #if ENABLE_SSL_THREAD
+        if ( is_ssl_child_thread() ){
+            #ifndef SSL_THREAD_DEBUG
+            return false;
+            #endif
+        }
+        #endif
         return level <= Debug::Levels[section];
+    }
+    
+    static bool IamChild(){
+        return is_ssl_child_thread();
+    }
+    
+    static void th_lock(){
+        #ifdef SSL_THREAD_DEBUG
+        pthread_mutex_lock(&SSL_debug_mutex);
+        #endif
+    }
+
+    static void th_unlock(){
+        #ifdef SSL_THREAD_DEBUG
+        pthread_mutex_unlock(&SSL_debug_mutex);
+        #endif
     }
 
     static char *debugOptions;
@@ -84,6 +108,15 @@ public:
     static int Levels[MAX_DEBUG_SECTIONS];
     static int override_X;
     static bool log_syslog;
+
+    #if ENABLE_SSL_THREAD
+    static pthread_t SSL_global_locking_thread;
+    static int SSL_global_locking_count;
+    #endif
+    
+    #ifdef SSL_THREAD_DEBUG
+    static pthread_mutex_t SSL_debug_mutex;
+    #endif
 
     // TODO: Convert all helpers to use debugs() and NameThisHelper() APIs.
     /// Use the given name for debugs() messages from this helper process.
@@ -193,16 +226,27 @@ void ResyncDebugLog(FILE *newDestination);
 #define debugs(SECTION, LEVEL, CONTENT) \
    do { \
         const int _dbg_level = (LEVEL); \
+        Debug::th_lock(); \
         if (Debug::Enabled((SECTION), _dbg_level)) { \
             std::ostream &_dbo = Debug::Start((SECTION), _dbg_level); \
             if (_dbg_level > DBG_IMPORTANT) { \
                 _dbo << (SECTION) << ',' << _dbg_level << "| " \
                      << Here() << ": "; \
             } \
+            if (Debug::IamChild()){ \
+            _dbo << " TH(" << pthread_self() << ") "; \
+            } \
             _dbo << CONTENT; \
             Debug::Finish(); \
         } \
+        Debug::th_unlock(); \
    } while (/*CONSTCOND*/ 0)
+
+#ifdef SSL_THREAD_DEBUG
+    #define child_debugs(SECTION, LEVEL, CONTENT) debugs(SECTION, LEVEL, CONTENT)
+#else
+    #define child_debugs(SECTION, LEVEL, CONTENT)
+#endif
 
 /// Does not change the stream being manipulated. Exists for its side effect:
 /// In a debugs() context, forces the message to become a syslog ALERT.

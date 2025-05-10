@@ -191,11 +191,116 @@ Security::Handshake(Comm::Connection &transport, const ErrorCode topError, Fun i
 #endif
 }
 
+#if ENABLE_SSL_THREAD_ACCEPT || ENABLE_SSL_THREAD_CONNECT
+static int ssl_th_func_common(const int fd, const int type){
+
+    if ( SSL_THREADED(fd) ){
+        debugs(98,6, "ssl_threaded > 0 for " << fd);
+
+        const int piped_fd = fd_table[fd].ssl_th_info.piped_read_fd;
+        int ssl_call_result = -1;
+        int ret = read(piped_fd, &ssl_call_result, sizeof(int));
+        
+        debugs(98,6, "ret = " << ret);
+
+        if ( ret == 0 ){
+            //IoResult::ioError;
+            return -1;
+        }
+
+        if ( ret < 0 ){
+            if ( errno == EAGAIN ){
+                //IoResult::ioWantRead;
+                return 1;
+            }
+            debugs(98,3, "Security::(Accept|Connect) errno = " << errno << " for " << fd);
+        }
+
+        debugs(98,6, "ssl_call_result = " << ssl_call_result << " for " << fd);
+
+
+        switch( ssl_call_result ){
+            case 1:
+                //IoResult::ioSuccess;
+                
+                if ( type == 2 
+                #if ENABLE_SSL_THREAD_ACCEPT_REUSE
+                    || (type == 1 && ! fd_table[fd].ssl_th_info.keep_accepted_thread )
+                #else
+                	|| type == 1
+                #endif
+                ){
+                    debugs(98,6, "call destroy_child for " << fd);
+                    destroy_child(fd);
+                }
+                
+                return 2;
+            case 0:
+                debugs(98,6, "call destroy_child for " << fd);
+                destroy_child(fd);
+                
+                //IoResult::ioError;
+                debugs(98,4, "ssl_call_result error = " << ssl_call_result);
+                return -2;
+            default:
+                debugs(98,6, "call destroy_child for " << fd);
+                destroy_child(fd);
+                
+                //IoResult::ioError;
+                debugs(98,4, "ssl_call_result error = " << ssl_call_result << " for " << fd);
+                return -1;
+        }
+    }
+
+    if ( fd_table[fd].ssl_th_info.ssl_threaded == 0 ){
+        if ( type == 1 ){
+            debugs(98,3, "create_ssl_accept_thread for " << fd);
+            create_ssl_accept_thread(fd);
+        }
+        else{
+            debugs(98,3, "create_ssl_connect_thread for " << fd);
+            create_ssl_connect_thread(fd);
+        }
+
+        //IoResult::ioWantRead;
+        if ( SSL_THREADED(fd) ) return 1;
+    }
+
+	// fallback
+    return 0;
+}
+#endif
+
+
 // TODO: After dropping OpenSSL v1.1.0 support, this and Security::Connect() can
 // be simplified further by using SSL_do_handshake() and eliminating lambdas.
 Security::IoResult
-Security::Accept(Comm::Connection &transport)
+Security::Accept(Comm::Connection &transport, bool thread)
 {
+
+	if (thread){
+		//debugs(98,7, "may try threading");
+	}
+
+#if ENABLE_SSL_THREAD_ACCEPT
+    if ( SSL_THREADED(transport.fd) || thread ){
+        const int thread_result = ssl_th_func_common(transport.fd, 1);
+
+        switch(thread_result){
+            case 1:
+                return IoResult(IoResult::ioWantRead);
+            case 2:
+                return IoResult(IoResult::ioSuccess);
+            
+            case -2:
+            case -1:
+            default:
+                // fallback
+                break;
+        }
+    }
+#endif
+
     return Handshake(transport, SQUID_TLS_ERR_ACCEPT, [] (ConnectionPointer tlsConn) {
 #if USE_OPENSSL
         return SSL_accept(tlsConn);
@@ -209,8 +314,28 @@ Security::Accept(Comm::Connection &transport)
 
 /// establish a TLS connection over the specified from-Squid transport connection
 Security::IoResult
-Security::Connect(Comm::Connection &transport)
+Security::Connect(Comm::Connection &transport, bool thread)
 {
+
+#if ENABLE_SSL_THREAD_CONNECT
+    if ( SSL_THREADED(transport.fd) || thread ){
+        const int thread_result = ssl_th_func_common(transport.fd, 2);
+
+        switch(thread_result){
+            case 1:
+                return IoResult(IoResult::ioWantRead);
+            case 2:
+                return IoResult(IoResult::ioSuccess);
+
+            case -2:
+            case -1:
+            default:
+                // fallback
+                break;
+        }
+    }
+#endif
+
     return Handshake(transport, SQUID_TLS_ERR_CONNECT, [] (ConnectionPointer tlsConn) {
 #if USE_OPENSSL
         return SSL_connect(tlsConn);

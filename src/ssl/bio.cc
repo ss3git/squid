@@ -362,6 +362,9 @@ Ssl::ServerBio::write(const char *buf, int size, BIO *table)
     }
 
     if (!helloBuild && (bumpMode_ == Ssl::bumpPeek || bumpMode_ == Ssl::bumpStare)) {
+
+        SSL_MT_MUTEX_IF_CHILD_LOCK();
+
         // We have not seen any bytes, so the buffer must start with an
         // OpenSSL-generated TLSPlaintext record containing, for example, a
         // ClientHello or an alert message. We check these assumptions before we
@@ -393,6 +396,10 @@ Ssl::ServerBio::write(const char *buf, int size, BIO *table)
         helloBuild = true;
         helloMsgSize = helloMsg.length();
 
+
+
+        SSL_MT_MUTEX_IF_CHILD_UNLOCK();
+
         if (allowSplice) {
             // Do not write yet.....
             BIO_set_retry_write(table);
@@ -403,7 +410,13 @@ Ssl::ServerBio::write(const char *buf, int size, BIO *table)
     if (!helloMsg.isEmpty()) {
         debugs(83, 7,  "buffered write for FD " << fd_);
         int ret = Ssl::Bio::write(helloMsg.rawContent(), helloMsg.length(), table);
+
+        SSL_MT_MUTEX_IF_CHILD_LOCK();
+        
         helloMsg.consume(ret);
+
+        SSL_MT_MUTEX_IF_CHILD_UNLOCK();
+            
         if (!helloMsg.isEmpty()) {
             // We need to retry sendind data.
             // Say to openSSL to retry sending hello message
@@ -425,7 +438,10 @@ Ssl::ServerBio::flush(BIO *table)
 {
     if (!helloMsg.isEmpty()) {
         int ret = Ssl::Bio::write(helloMsg.rawContent(), helloMsg.length(), table);
+        
+        SSL_MT_MUTEX_IF_CHILD_LOCK();
         helloMsg.consume(ret);
+        SSL_MT_MUTEX_IF_CHILD_UNLOCK();
     }
 }
 
@@ -482,7 +498,44 @@ squid_bio_read(BIO *table, char *buf, int size)
 {
     Ssl::Bio *bio = static_cast<Ssl::Bio*>(BIO_get_data(table));
     assert(bio);
-    return bio->read(buf, size, table);
+
+    const bool need_lock = bio->needReadLock();
+
+    if ( need_lock ){
+        SSL_MT_MUTEX_IF_CHILD_LOCK();
+    }
+
+    const int ret = bio->read(buf, size, table);
+
+    if ( need_lock ){
+        SSL_MT_MUTEX_IF_CHILD_UNLOCK();
+    }
+
+    return ret;
+}
+
+
+bool
+Ssl::Bio::needReadLock(){
+    return false;
+}
+
+bool
+Ssl::ClientBio::needReadLock(){
+    if ( abortReason || holdRead_ || rbuf.isEmpty() ){
+        return false;
+    }
+
+    return true;
+}
+
+bool
+Ssl::ServerBio::needReadLock(){
+    if (parsedHandshake && rbuf.isEmpty() && !record_){
+        return false;
+    }
+
+    return true;
 }
 
 /// implements puts() via write()
@@ -560,6 +613,11 @@ squid_bio_ctrl(BIO *table, int cmd, long arg1, void *arg2)
 static void
 squid_ssl_info(const SSL *ssl, int where, int ret)
 {
+#if ENABLE_SSL_THREAD
+	if ( is_ssl_child_thread() ){
+		return;
+	}
+#endif
     if (BIO *table = SSL_get_rbio(ssl)) {
         if (Ssl::Bio *bio = static_cast<Ssl::Bio*>(BIO_get_data(table)))
             bio->stateChanged(ssl, where, ret);

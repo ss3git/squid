@@ -17,6 +17,7 @@
 #include "ip/forward.h"
 #include "security/forward.h"
 #include "typedefs.h" //DRCB, DWCB
+#include "ssl_mt.h"
 
 #if USE_DELAY_POOLS
 #include "MessageBucket.h"
@@ -194,6 +195,9 @@ public:
         pthread_mutex_t ssl_mutex;
         pthread_t th;
         pthread_attr_t attr;
+        #if ENABLE_SSL_THREAD_ACCEPT_REUSE
+        int keep_accepted_thread;
+        #endif
         int error_flag;
     } ssl_th_info;
 
@@ -203,13 +207,25 @@ private:
     WRITE_HANDLER *writeMethod_ = nullptr; ///< exports Squid bytes
 };
 
-#if defined(USE_OPENSSL) && (defined(USE_KQUEUE) || defined(USE_EPOLL))
-#define ENABLE_SSL_THREAD
-#define SSL_THREADED(fd)    ((fd_table[fd].ssl) && (fd_table[fd].ssl_th_info.ssl_threaded > 0))
-#define SSL_GET_RD_FD(fd)   (SSL_THREADED(fd) ? fd_table[fd].ssl_th_info.piped_read_fd : (fd))
-#define SSL_GET_WR_FD(fd)   (SSL_THREADED(fd) ? fd_table[fd].ssl_th_info.piped_write_fd : (fd))
-#define SSL_GET_REAL_FD(fd) ((fd_table[fd].ssl && fd_table[fd].ssl_th_info.real_fd) ? fd_table[fd].ssl_th_info.real_fd : (fd))
-void destroy_child(int fd);
+#if ENABLE_SSL_THREAD
+    
+	#define SSL_THREADED(fd)    ((fd_table[fd].ssl) && (fd_table[fd].ssl_th_info.ssl_threaded > 0))
+	#define SSL_GET_RD_FD(fd)   (SSL_THREADED(fd) ? fd_table[fd].ssl_th_info.piped_read_fd : (fd))
+	#define SSL_GET_WR_FD(fd)   (SSL_THREADED(fd) ? fd_table[fd].ssl_th_info.piped_write_fd : (fd))
+	#define SSL_GET_REAL_FD(fd) ((fd_table[fd].ssl && fd_table[fd].ssl_th_info.real_fd) \
+				? fd_table[fd].ssl_th_info.real_fd : (fd))
+	void destroy_child(int fd);
+	
+    void create_ssl_read_and_write_thread(int fd);
+    void create_ssl_accept_thread(int fd);
+    void create_ssl_connect_thread(int fd);
+    
+#else
+
+	#define SSL_THREADED(fd)    (0)
+	#define SSL_GET_RD_FD(fd)   (fd)
+	#define SSL_GET_WR_FD(fd)   (fd)
+	#define SSL_GET_REAL_FD(fd) (fd)
 #endif
 
 #define fd_table fde::Table

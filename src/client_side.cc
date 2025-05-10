@@ -2308,9 +2308,9 @@ ConnStateData::whenClientIpKnown()
 }
 
 Security::IoResult
-ConnStateData::acceptTls()
+ConnStateData::acceptTls(bool thread)
 {
-    const auto handshakeResult = Security::Accept(*clientConnection);
+    const auto handshakeResult = Security::Accept(*clientConnection, thread);
 
 #if USE_OPENSSL
     // log ASAP, even if the handshake has not completed (or failed)
@@ -2370,7 +2370,7 @@ clientNegotiateSSL(int fd, void *data)
 {
     ConnStateData *conn = (ConnStateData *)data;
 
-    const auto handshakeResult = conn->acceptTls();
+    const auto handshakeResult = conn->acceptTls(true);
     switch (handshakeResult.category) {
     case Security::IoResult::ioSuccess:
         break;
@@ -2473,6 +2473,16 @@ clientNegotiateSSL(int fd, void *data)
         Must(conn->pipeline.empty());
     }
     /* careful: finished() above frees request, host, etc. */
+
+    #if ENABLE_SSL_THREAD_ACCEPT_REUSE
+    if ( SSL_THREADED(fd) && fd_table[fd].ssl_th_info.keep_accepted_thread ){
+        int ack_fd = SSL_GET_WR_FD(fd);
+        int ret = write(ack_fd, &ack_fd, sizeof(int));
+        if ( ret <= 0 ){
+            debugs(98, 1, "keep thread error " << fd);
+        }
+    }
+    #endif
 
     conn->readSomeData();
 }
@@ -3093,7 +3103,7 @@ ConnStateData::startPeekAndSplice()
     // expect Security::Accept() to ask us to write (our) TLS server Hello. We
     // also allow an ioWantRead result in case some fancy TLS extension that
     // Squid does not yet understand requires reading post-Hello client bytes.
-    const auto handshakeResult = acceptTls();
+    const auto handshakeResult = acceptTls(false);
     if (!handshakeResult.wantsIo())
         return handleSslBumpHandshakeError(handshakeResult);
 
