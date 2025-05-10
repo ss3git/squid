@@ -76,11 +76,9 @@ public:
     /// whether debugging the given section and the given level produces output
     static bool Enabled(const int section, const int level)
     {
-        #if ENABLE_SSL_THREAD
+        #if ENABLE_SSL_THREAD && ! defined(SSL_THREAD_DEBUG)
         if ( is_ssl_child_thread() ){
-            #ifndef SSL_THREAD_DEBUG
             return false;
-            #endif
         }
         #endif
         return level <= Debug::Levels[section];
@@ -226,25 +224,26 @@ void ResyncDebugLog(FILE *newDestination);
 #define debugs(SECTION, LEVEL, CONTENT) \
    do { \
         const int _dbg_level = (LEVEL); \
-        Debug::th_lock(); \
         if (Debug::Enabled((SECTION), _dbg_level)) { \
+            Debug::th_lock(); \
             std::ostream &_dbo = Debug::Start((SECTION), _dbg_level); \
             if (_dbg_level > DBG_IMPORTANT) { \
                 _dbo << (SECTION) << ',' << _dbg_level << "| " \
                      << Here() << ": "; \
             } \
             if (Debug::IamChild()){ \
-            _dbo << " TH(" << pthread_self() << ") "; \
+            _dbo << "TH(" << pthread_self() << ") "; \
             } \
             _dbo << CONTENT; \
             Debug::Finish(); \
+            Debug::th_unlock(); \
         } \
-        Debug::th_unlock(); \
    } while (/*CONSTCOND*/ 0)
 
 #ifdef SSL_THREAD_DEBUG
     #define child_debugs(SECTION, LEVEL, CONTENT) debugs(SECTION, LEVEL, CONTENT)
 #else
+    // omit child logs when they are not required
     #define child_debugs(SECTION, LEVEL, CONTENT)
 #endif
 

@@ -2474,16 +2474,10 @@ clientNegotiateSSL(int fd, void *data)
     }
     /* careful: finished() above frees request, host, etc. */
 
-    #if ENABLE_SSL_THREAD_ACCEPT_REUSE
-    if ( SSL_THREADED(fd) && fd_table[fd].ssl_th_info.keep_accepted_thread ){
-        int ack_fd = SSL_GET_WR_FD(fd);
-        int ret = write(ack_fd, &ack_fd, sizeof(int));
-        if ( ret <= 0 ){
-            debugs(98, 1, "keep thread error " << fd);
-        }
-    }
+    #if ENABLE_SSL_THREAD_ALWAYS_RW
+    create_ssl_read_and_write_thread(fd);
     #endif
-
+    
     conn->readSomeData();
 }
 

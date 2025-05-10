@@ -43,7 +43,11 @@
 #include <sys/event.h>
 #endif
 
+#if ENABLE_SSL_THREAD
+#define KE_LENGTH        8  /* shorter queue gets better results (latency) on load */
+#else
 #define KE_LENGTH        128
+#endif
 
 static void kq_update_events(int, short, PF *);
 static int kq;
@@ -97,8 +101,13 @@ kq_update_events(int fd, short filter, PF * handler)
         kep = kqlst + kqoff;
 
         if (handler != NULL) {
-            if ( fd_table[fd].ssl && filter == EVFILT_WRITE ){
-                kep_flags = (EV_ADD | EV_CLEAR);
+            if ( setting_fd != fd ){
+	            if ( filter == EVFILT_WRITE ){
+	                kep_flags = (EV_ADD | EV_CLEAR);
+	            }
+	            else{
+                	kep_flags = (EV_ADD | EV_ENABLE | EV_DISPATCH);
+                }
             }
             else{
                 kep_flags = (EV_ADD | EV_ONESHOT);
@@ -266,14 +275,13 @@ Comm::DoSelect(int msec)
             if ((hdl = F->read_handler) != NULL) {
                 F->read_handler = nullptr;
                 hdl(fd, F->read_data);
-                SSL_MT_MUTEX_UNLOCK();
-                SSL_MT_MUTEX_LOCK();
+                //SSL_MT_MUTEX_YIELD();
             }
         }
 
         if (ke[i].filter == EVFILT_WRITE) {
             if ((hdl = F->write_handler) != NULL) {
-                const int FILTER_SIZE = (SSL_THREADED(fd) && (int)ke[i].ident == SSL_GET_WR_FD(fd))
+                const int FILTER_SIZE = (SSL_THREADED(fd) && fd != (int)ke[i].ident)
                 			? (fd_table[fd].ssl_th_info.ssl_max_write_size & 0xffffc000) : 0; // round to multiple of 16KB
                 if ( fd_table[fd].ssl && ke[i].data < FILTER_SIZE && !(ke[i].flags & EV_EOF) ){
                     // skip unless write buffer has large enough space to reduce cpu load                	
@@ -286,8 +294,7 @@ Comm::DoSelect(int msec)
                     
                     F->write_handler = nullptr;
                     hdl(fd, F->write_data);
-                	SSL_MT_MUTEX_UNLOCK();
-                	SSL_MT_MUTEX_LOCK();                    
+                	//SSL_MT_MUTEX_YIELD();
                 }
             }
         }

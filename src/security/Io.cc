@@ -218,34 +218,18 @@ static int ssl_th_func_common(const int fd, const int type){
 
         debugs(98,6, "ssl_call_result = " << ssl_call_result << " for " << fd);
 
+        debugs(98,6, "call destroy_child for " << fd);
+        destroy_child(fd, true);
 
         switch( ssl_call_result ){
             case 1:
-                //IoResult::ioSuccess;
-                
-                if ( type == 2 
-                #if ENABLE_SSL_THREAD_ACCEPT_REUSE
-                    || (type == 1 && ! fd_table[fd].ssl_th_info.keep_accepted_thread )
-                #else
-                	|| type == 1
-                #endif
-                ){
-                    debugs(98,6, "call destroy_child for " << fd);
-                    destroy_child(fd);
-                }
-                
+                //IoResult::ioSuccess;                
                 return 2;
             case 0:
-                debugs(98,6, "call destroy_child for " << fd);
-                destroy_child(fd);
-                
                 //IoResult::ioError;
                 debugs(98,4, "ssl_call_result error = " << ssl_call_result);
                 return -2;
             default:
-                debugs(98,6, "call destroy_child for " << fd);
-                destroy_child(fd);
-                
                 //IoResult::ioError;
                 debugs(98,4, "ssl_call_result error = " << ssl_call_result << " for " << fd);
                 return -1;

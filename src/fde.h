@@ -181,7 +181,7 @@ public:
     CodeContextPointer codeContext;
 
     struct {
-        int ssl_threaded;	// 0: non-thread, 1: threaded, -1: threading failed
+        int ssl_threaded;	// 0: non-thread, 1: threaded, 2: to be stopped, -1: threading failed
         void *ssl_session;
         int piped_read_fd;
         int piped_write_fd;
@@ -195,10 +195,9 @@ public:
         pthread_mutex_t ssl_mutex;
         pthread_t th;
         pthread_attr_t attr;
-        #if ENABLE_SSL_THREAD_ACCEPT_REUSE
-        int keep_accepted_thread;
-        #endif
+        pthread_cond_t th_cond;
         int error_flag;
+        int thread_stage;  // 0: thread init not done, 1: thread running, 2: thread flushing buffer, 3: thread finished
     } ssl_th_info;
 
 private:
@@ -211,10 +210,10 @@ private:
     
 	#define SSL_THREADED(fd)    ((fd_table[fd].ssl) && (fd_table[fd].ssl_th_info.ssl_threaded > 0))
 	#define SSL_GET_RD_FD(fd)   (SSL_THREADED(fd) ? fd_table[fd].ssl_th_info.piped_read_fd : (fd))
-	#define SSL_GET_WR_FD(fd)   (SSL_THREADED(fd) ? fd_table[fd].ssl_th_info.piped_write_fd : (fd))
+	#define SSL_GET_WR_FD(fd)   (SSL_THREADED(fd) && (fd_table[fd].ssl_th_info.ssl_threaded == 1) ? fd_table[fd].ssl_th_info.piped_write_fd : (fd))
 	#define SSL_GET_REAL_FD(fd) ((fd_table[fd].ssl && fd_table[fd].ssl_th_info.real_fd) \
 				? fd_table[fd].ssl_th_info.real_fd : (fd))
-	void destroy_child(int fd);
+	int destroy_child(int fd, bool force);
 	
     void create_ssl_read_and_write_thread(int fd);
     void create_ssl_accept_thread(int fd);

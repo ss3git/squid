@@ -248,6 +248,12 @@ Security::PeerConnector::negotiate()
         debugs(83, DBG_IMPORTANT, "ERROR: Squid BUG: Honoring unexpected SSL_connect() failure: X509_V_ERR_UNABLE_TO_GET_ISSUER_CERT_LOCALLY");
         // fall through to regular error handling
     }
+
+    #if ENABLE_SSL_THREAD_ALWAYS_RW
+    if ( result.category == IoResult::ioSuccess ){
+        create_ssl_read_and_write_thread(fd);
+    }
+    #endif
 #endif
 
     handleNegotiationResult(result);

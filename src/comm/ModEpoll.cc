@@ -300,6 +300,7 @@ Comm::DoSelect(int msec)
                 F->read_handler = nullptr;
                 hdl(fd, F->read_data);
                 ++ statCounter.select_fds;
+                SSL_MT_MUTEX_YIELD();
             } else {
                 debugs(5, DEBUG_EPOLL ? 0 : 8, "no read handler for FD " << fd);
                 // remove interest since no handler exist for this event.
@@ -313,6 +314,7 @@ Comm::DoSelect(int msec)
                 F->write_handler = nullptr;
                 hdl(fd, F->write_data);
                 ++ statCounter.select_fds;
+                SSL_MT_MUTEX_YIELD();
             } else {
                 debugs(5, DEBUG_EPOLL ? 0 : 8, "no write handler for FD " << fd);
                 // remove interest since no handler exist for this event.

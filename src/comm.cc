@@ -814,19 +814,10 @@ old_comm_reset_close(int fd)
 }
 
 static void
-commStartTlsClose(const int fd)
-{
-    #if ENABLE_SSL_THREAD
-    debugs(98, 6, "commStartTlsClose call destroy_child " << fd);
-    destroy_child(fd);
-    #endif
-
-    Security::SessionSendGoodbye(fd_table[fd].ssl);
-}
-
-static void
 comm_close_complete(const int fd)
 {
+    debugs(98, 3, "comm_close_complete " << fd);
+
     auto F = &fd_table[fd];
     F->ssl.reset();
     F->dynamicTlsContext.reset();
@@ -840,43 +831,17 @@ comm_close_complete(const int fd)
     Comm::AcceptLimiter::Instance().kick();
 }
 
-/*
- * Close the socket fd.
- *
- * + call write handlers with ERR_CLOSING
- * + call read handlers with ERR_CLOSING
- * + call closing handlers
- *
- * A deferred reader has no Comm read handler mentioned above. To stay in sync,
- * such a reader must register a Comm closing handler.
- */
-void
-_comm_close(int fd, char const *file, int line)
+static void
+commStartTlsClose(const int fd)
 {
-    debugs(5, 3, "start closing FD " << fd << " by " << file << ":" << line);
-    assert(fd >= 0);
-    assert(fd < Squid_MaxFD);
+    Security::SessionSendGoodbye(fd_table[fd].ssl);
+}
 
+static void
+comm_close_schedule(const int fd)
+{
     fde *F = &fd_table[fd];
-
-    if (F->closing())
-        return;
-
-    /* XXX: is this obsolete behind F->closing() ? */
-    if ( (shutting_down || reconfiguring) && (!F->flags.open || F->type == FD_FILE))
-        return;
-
-    /* The following fails because ipc.c is doing calls to pipe() to create sockets! */
-    if (!isOpen(fd)) {
-        debugs(50, DBG_IMPORTANT, "ERROR: Squid BUG #3556: FD " << fd << " is not an open socket.");
-        // XXX: do we need to run close(fd) or fd_close(fd) here?
-        return;
-    }
-
-    assert(F->type != FD_FILE);
-
-    F->flags.close_request = true;
-
+    
     // We have caller's context and fde::codeContext. In the unlikely event they
     // differ, it is not clear which context is more applicable to this closure.
     // For simplicity sake, we remain in the caller's context while still
@@ -919,6 +884,121 @@ _comm_close(int fd, char const *file, int line)
     const auto completeCall = asyncCall(5, 4, "comm_close_complete",
                                         callDialer(comm_close_complete, fd));
     ScheduleCallHere(completeCall);
+}
+
+static void commTlsThreadStopHandler(int fd, void *data);
+
+static void
+_comm_close2(const int fd)
+{
+    commTlsThreadStopHandler(fd, NULL);
+}
+
+static void
+commTlsThreadStopHandler(int fd, void *data)
+{    
+    debugs(98, 9, "FD " << fd << ", client_data=" << data);
+           
+    #if ENABLE_SSL_THREAD
+    if (SSL_THREADED(fd)){
+        if ( data == NULL ) debugs(98, 6, "commTlsThreadStopHandler call " << fd);
+
+        #ifdef SSL_THREAD_DEFER_BUF_FLUSH
+	    const bool force = false;
+        #else
+	    const bool force = true;
+        #endif
+
+	    int ret = destroy_child(fd, force);
+	    if ( ret == 0 ){
+            // child has stopped, do nothing and continue
+        }
+        else if ( ret == 1 ){
+            // child thread has started finish process
+            // do this again later to parallelize processes
+
+            debugs(98, 3, "async comm_close process " << fd);
+
+            // monitor pipe read
+            fd_table[fd].flags.read_pending = false;
+            Comm::SetSelect(fd, COMM_SELECT_READ, commTlsThreadStopHandler, NULL, 0);
+
+            return;
+        }
+        else if ( ret == 2 ){
+            // ssl_read side has already been shutdown, but
+            // thread child has remaining buffer to flush for ssl_write
+
+			int loglevel = 6;
+            if ( data == NULL ){
+                loglevel = 2;
+            }
+            
+            debugs(98, loglevel, "defer comm_close process " << fd);
+            
+            // monitor actual fd at write side
+            fd_table[fd].flags.read_pending = false;
+            Comm::SetSelect(fd, COMM_SELECT_WRITE, commTlsThreadStopHandler, (void*)1, 0);
+
+            // DoSelect() may immediately return, so wait a little to reduce cpu usage
+            SSL_MT_MUTEX_UNLOCK();
+            usleep(100);
+            SSL_MT_MUTEX_LOCK();
+            
+            return;
+        }
+       else{
+            // unknown state, force close it and continue
+            ret = destroy_child(fd, true);
+            if ( ret != 0 ){
+                debugs(98, 1, "destroy_child error " << fd);
+            }
+        }
+    }
+    #endif
+
+    comm_close_schedule(fd);
+}
+
+/*
+ * Close the socket fd.
+ *
+ * + call write handlers with ERR_CLOSING
+ * + call read handlers with ERR_CLOSING
+ * + call closing handlers
+ *
+ * A deferred reader has no Comm read handler mentioned above. To stay in sync,
+ * such a reader must register a Comm closing handler.
+ */
+void
+_comm_close(int fd, char const *file, int line)
+{
+    debugs(5, 3, "start closing FD " << fd << " by " << file << ":" << line);
+    assert(fd >= 0);
+    assert(fd < Squid_MaxFD);
+            
+    fde *F = &fd_table[fd];
+
+    if (F->closing())
+        return;
+
+    /* XXX: is this obsolete behind F->closing() ? */
+    if ( (shutting_down || reconfiguring) && (!F->flags.open || F->type == FD_FILE))
+        return;
+
+    /* The following fails because ipc.c is doing calls to pipe() to create sockets! */
+    if (!isOpen(fd)) {
+        debugs(50, DBG_IMPORTANT, "ERROR: Squid BUG #3556: FD " << fd << " is not an open socket.");
+        // XXX: do we need to run close(fd) or fd_close(fd) here?
+        return;
+    }
+
+    assert(F->type != FD_FILE);
+
+    F->flags.close_request = true;
+
+
+	_comm_close2(fd);
 }
 
 /* Send a udp datagram to specified TO_ADDR. */

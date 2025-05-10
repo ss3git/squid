@@ -29,8 +29,6 @@ EventLoop::EventLoop() : errcount(0), last_loop(false), timeService(nullptr),
 void
 EventLoop::checkEngine(AsyncEngine * engine, bool const primary)
 {
-	SSL_MT_MUTEX_LOCK();
-	
     int requested_delay;
 
     if (!primary)
@@ -38,8 +36,6 @@ EventLoop::checkEngine(AsyncEngine * engine, bool const primary)
     else
         requested_delay = engine->checkEvents(loop_delay);
 
-    SSL_MT_MUTEX_UNLOCK();
-    
     if (requested_delay < 0)
         switch (requested_delay) {
 
@@ -85,7 +81,9 @@ EventLoop::run()
     assert(!Running);
     Running = this;
 
-    while (!runOnce());
+    SSL_MT_MUTEX_LOCK();
+    while (!runOnce()){}
+    SSL_MT_MUTEX_UNLOCK();
 
     Running = nullptr;
 }
@@ -146,12 +144,7 @@ EventLoop::runOnce()
 bool
 EventLoop::dispatchCalls()
 {
-    SSL_MT_MUTEX_LOCK();
-
     bool dispatchedSome = AsyncCallQueue::Instance().fire();
-    
-    SSL_MT_MUTEX_UNLOCK();
-
     return dispatchedSome;
 }
 
