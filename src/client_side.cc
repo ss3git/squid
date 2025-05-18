@@ -2474,10 +2474,6 @@ clientNegotiateSSL(int fd, void *data)
     }
     /* careful: finished() above frees request, host, etc. */
 
-    #if ENABLE_SSL_THREAD_ALWAYS_RW
-    create_ssl_read_and_write_thread(fd);
-    #endif
-    
     conn->readSomeData();
 }
 

@@ -43,11 +43,7 @@
 #include <sys/event.h>
 #endif
 
-#if ENABLE_SSL_THREAD
-#define KE_LENGTH        8  /* shorter queue gets better results (latency) on load */
-#else
 #define KE_LENGTH        128
-#endif
 
 static void kq_update_events(int, short, PF *);
 static int kq;

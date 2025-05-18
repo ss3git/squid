@@ -17,8 +17,6 @@
     
     #define ENABLE_SSL_THREAD_CONNECT 1         // create a thread for SSL_connect()
     
-    #define ENABLE_SSL_THREAD_ALWAYS_RW 1	// create a thread for SSL_read/write() before receiving/sending any
-    
     extern pthread_mutex_t SSL_global_mutex;
 
     #define SSL_THREAD_DEFER_BUF_FLUSH  /* if defined, defer comm_close process and try to flush buffer 
@@ -26,6 +24,8 @@
                                            otherwise force close such a session. */
 
     #define SSL_THREAD_DEBUG    // enable (thread-safe) debugs() output from child threads
+
+    #define SSL_SUPPORT_PROVIDER
         
 #else
     #define ENABLE_SSL_THREAD 0
@@ -35,6 +35,16 @@
 #endif
 
 #if ENABLE_SSL_THREAD
+    #define SSL_TH_KIND_RECV_SEND	1
+    #define SSL_TH_KIND_ACCEPT		2
+    #define SSL_TH_KIND_CONNECT		3
+
+    #ifdef SSL_SUPPORT_PROVIDER
+        #include <openssl/provider.h>
+        extern OSSL_PROVIDER *ssl_provider;
+        extern int need_ssl_provider_reconfigure;
+    #endif
+
 	// child threads should have higher priority
     #if _SQUID_FREEBSD_
         #define SSL_MT_WAIT_CHILD() \

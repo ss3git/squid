@@ -2265,6 +2265,15 @@ COMMENT_START
  -----------------------------------------------------------------------------
 COMMENT_END
 
+NAME: ssl_provider
+TYPE: string
+IFDEF: USE_OPENSSL
+LOC: Config.SSL.ssl_provider
+DEFAULT: none
+DOC_START
+	OpenSSL additional provider name such as qatprovider
+DOC_END
+
 NAME: ssl_accept_thread
 COMMENT: on|off
 TYPE: onoff

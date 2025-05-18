@@ -498,6 +498,7 @@ public:
         size_t sessionCacheSize;
         char *certSignHash;
         u_short max_threads;
+        char *ssl_provider;
         int enable_accept_thread;
         int enable_connect_thread;
         int enable_read_write_thread;

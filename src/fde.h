@@ -198,6 +198,7 @@ public:
         pthread_cond_t th_cond;
         int error_flag;
         int thread_stage;  // 0: thread init not done, 1: thread running, 2: thread flushing buffer, 3: thread finished
+        int kind;  // 1: recv_send, 2: accept, 3: connect
     } ssl_th_info;
 
 private:

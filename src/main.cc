@@ -715,6 +715,7 @@ void
 reconfigure(int sig)
 {
     do_reconfigure = 1;
+    need_ssl_provider_reconfigure = 1;
     ReconfigureSignal = sig;
 #if !_SQUID_WINDOWS_
 #if !HAVE_SIGACTION
@@ -1293,6 +1294,8 @@ mainInitialize(void)
 
     eventAdd("memPoolCleanIdlePools", Mem::CleanIdlePools, nullptr, 15.0, 1);
 
+    need_ssl_provider_reconfigure = 1;
+    
     configured_once = 1;
 }
 
@@ -2135,6 +2138,14 @@ SquidShutdown()
     RunRegisteredHere(RegisteredRunner::finishShutdown);
 
     memClean();
+    
+    #ifdef SSL_SUPPORT_PROVIDER
+    if ( ssl_provider != nullptr ){
+	    OSSL_PROVIDER_unload(ssl_provider);
+	    ssl_provider = nullptr;
+	    debugs(98, 2, "OSSL_PROVIDER_unload");
+	}
+    #endif
 
     debugs(1, Important(10), "Squid Cache (Version " << version_string << "): Exiting normally.");
 

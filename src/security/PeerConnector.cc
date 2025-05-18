@@ -249,11 +249,6 @@ Security::PeerConnector::negotiate()
         // fall through to regular error handling
     }
 
-    #if ENABLE_SSL_THREAD_ALWAYS_RW
-    if ( result.category == IoResult::ioSuccess ){
-        create_ssl_read_and_write_thread(fd);
-    }
-    #endif
 #endif
 
     handleNegotiationResult(result);

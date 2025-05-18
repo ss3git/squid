@@ -29,20 +29,22 @@ static const char *SessionCacheName = "tls_session_cache";
 #endif
 
 #if ENABLE_SSL_THREAD
-
-#if ENABLE_SSL_THREAD
 pthread_mutex_t SSL_global_mutex = PTHREAD_MUTEX_INITIALIZER; //PTHREAD_RECURSIVE_MUTEX_INITIALIZER_NP;
 #if _SQUID_FREEBSD_
 pthread_cond_t SSL_global_cond = PTHREAD_COND_INITIALIZER;
 volatile u_int atomic_child_is_waiting = ATOMIC_VAR_INIT(0);
 #endif
+
+#ifdef SSL_SUPPORT_PROVIDER
+OSSL_PROVIDER *ssl_provider = nullptr;
+int need_ssl_provider_reconfigure = 0;
 #endif
 
 static const int READ = 0;
 static const int WRITE = 1;
 
-static int max_thread_counter = 0;
-static int thread_counter = 0;
+static int max_thread_counter[4] = {0};
+static int thread_counter[4] = {0};
 
 static void stop_signals(){
     // copy from squidaio_thread_loop
@@ -84,19 +86,14 @@ static void *thread_reader_and_writer( void *args ){
     pthread_mutex_t * const ssl_mutex_p = &F_real->ssl_th_info.ssl_mutex;
     pthread_cond_t * const ssl_cond_p = &F_real->ssl_th_info.th_cond;
 
-    const int ktls_write = 
-    #if defined(SSL_OP_ENABLE_KTLS) && _SQUID_FREEBSD_
-        ((SSL_get_options(session) & SSL_OP_ENABLE_KTLS) != 0) && (BIO_flush(SSL_get_wbio(session)) == 1);
-    #else
-        0;
-    #endif
-
     fcntl( piped_read_fd_at_thread, F_SETFL, fcntl(piped_read_fd_at_thread, F_GETFL) | O_NONBLOCK);
     fcntl( piped_write_fd_at_thread, F_SETFL, fcntl(piped_write_fd_at_thread, F_GETFL) | O_NONBLOCK);
 
     const int ssl_read_ahead = SSL_get_read_ahead(session);
     SSL_set_read_ahead(session, 1);
 
+    const int ssl_partial_write = (SSL_get_mode(session) & SSL_MODE_ENABLE_PARTIAL_WRITE) ? 1 : 0;
+    SSL_set_mode(session, SSL_MODE_ENABLE_PARTIAL_WRITE);
 
     int destroying = 0;
 
@@ -224,14 +221,10 @@ static void *thread_reader_and_writer( void *args ){
                 child_debugs(98, 8, "write to ssl side. " << real_fd);
 
                 const int w_size = write_buf_to_ssl_head-write_buf_to_ssl_tail;
-                int w;
-                if (ktls_write){
-                    w = write(real_fd, buf_W+write_buf_to_ssl_tail, w_size);
-                }
-                else{
-                    // max. 16KB for a cycle
-                    w = SSL_write(session, buf_W+write_buf_to_ssl_tail, min(16*1024, w_size));
-                }
+                
+                // max. 16KB for a cycle
+                const int w = SSL_write(session, buf_W+write_buf_to_ssl_tail, min(16*1024, w_size));
+                
                 if ( w > 0 ){
                     // ok
                     
@@ -466,6 +459,10 @@ static void *thread_reader_and_writer( void *args ){
 
     SSL_set_read_ahead(session, ssl_read_ahead);
 
+    if (!ssl_partial_write){
+        SSL_clear_mode(session, SSL_MODE_ENABLE_PARTIAL_WRITE);
+    }
+
     child_debugs(98, 6, "trace lock ssl_mutex_p  " << real_fd);
 
     pthread_mutex_lock(ssl_mutex_p);
@@ -477,6 +474,51 @@ static void *thread_reader_and_writer( void *args ){
 
     return NULL;
     
+}
+
+static void reconfigureSslProvider(){
+    #ifdef SSL_SUPPORT_PROVIDER
+    if ( ! need_ssl_provider_reconfigure ){
+        return;
+    }
+    if ( thread_counter[0] != 0 ){
+        return;
+    }
+    if ( ssl_provider != nullptr ){
+        if ( Config.SSL.ssl_provider != nullptr 
+                && !strcmp(OSSL_PROVIDER_get0_name(ssl_provider), Config.SSL.ssl_provider)
+                && OSSL_PROVIDER_self_test(ssl_provider) == 1
+            ){
+	    
+            debugs(98, 1, "OSSL_PROVIDER_unload skip");
+                    
+            need_ssl_provider_reconfigure = 0;
+            return;
+        }
+
+	    debugs(98, 1, "OSSL_PROVIDER_unload call");
+	    OSSL_PROVIDER_unload(ssl_provider);
+	    ssl_provider = nullptr;
+	    debugs(98, 1, "OSSL_PROVIDER_unload done");
+	}
+    if ( Config.SSL.ssl_provider ){
+        ssl_provider = OSSL_PROVIDER_try_load(NULL, Config.SSL.ssl_provider, 1);
+        debugs(98, 1, "OSSL_PROVIDER_try_load " << Config.SSL.ssl_provider << ": " << ssl_provider);
+
+        if ( ssl_provider != nullptr ){
+            int self_test = OSSL_PROVIDER_self_test(ssl_provider);
+            debugs(98, 1, "OSSL_PROVIDER_self_test result " << self_test);
+            if ( self_test != 1 ){
+                OSSL_PROVIDER_unload(ssl_provider);
+                ssl_provider = nullptr;
+                debugs(98, 1, "OSSL_PROVIDER_self_test error OSSL_PROVIDER_unload");
+            }
+        }
+    }
+
+    need_ssl_provider_reconfigure = 0;
+
+    #endif
 }
 
 int destroy_child(int fd, bool force){
@@ -584,13 +626,16 @@ int destroy_child(int fd, bool force){
              << F->ssl_th_info.real_fd << ", " << F->ssl_th_info.error_flag);
     }
 
-    thread_counter--;
+    thread_counter[0]--;
+    thread_counter[F->ssl_th_info.kind]--;
 
-    debugs(98, 2, "current Threads: " << thread_counter << "/" << Config.SSL.max_threads);
+    debugs(98, 2, "current Threads: " << thread_counter[0] << "/" << Config.SSL.max_threads);
 
-    if ( thread_counter == 0 ){
-        max_thread_counter = 0;
-        debugs(98, 2, "Zero SSL Threads: " << thread_counter);
+    if ( thread_counter[0] == 0 ){
+        memset(max_thread_counter, 0, sizeof(max_thread_counter));
+        debugs(98, 2, "Zero SSL Threads: " << thread_counter[0]);
+        
+        reconfigureSslProvider();
     }
 
     pipe_free_wrap(fd, READ);
@@ -771,21 +816,14 @@ static void *thread_connecter( void *args ){
     return NULL;
 }
 
-static void create_ssl_thread_common( int fd, void *(*start_routine) (void *) ){
+static void create_ssl_thread_common( const int fd, const int thread_kind ){
     int pipe_for_ssl_read[2];
     int pipe_for_ssl_write[2];
 
-    if ( thread_counter >= Config.SSL.max_threads ){
+    if ( thread_counter[0] >= Config.SSL.max_threads ){
         if (Config.SSL.max_threads > 0) debugs(98, 1, "max number of thread has reached, FD " << fd );
         return;
     }
-
-	#if ENABLE_SSL_THREAD_ALWAYS_RW
-    if ( Config.SSL.enable_read_write_thread && thread_counter == 0 && start_routine != thread_reader_and_writer ){
-        if (Config.SSL.max_threads > 0) debugs(98, 7, "skip creating a thread during idle state, FD " << fd );
-        return;
-    }
-    #endif
 
     fde *F = &fd_table[fd];
     
@@ -827,6 +865,8 @@ static void create_ssl_thread_common( int fd, void *(*start_routine) (void *) ){
 
     F->ssl_th_info.ssl_session = F->ssl.get();
 
+    F->ssl_th_info.kind = thread_kind;
+
     F->ssl_th_info.ssl_threaded = 1;
 
 
@@ -838,24 +878,88 @@ static void create_ssl_thread_common( int fd, void *(*start_routine) (void *) ){
     pthread_cond_init (cond_p, NULL);
     
     #if _SQUID_FREEBSD_
-    // benchmark purpose
-    if ( Config.workers > 1 && Config.cpuAffinityMap ){
+	if ( Config.workers <= 1 ) {
+        // TODO for Linux
+        
+        cpuset_t cset;
+        pthread_getaffinity_np(pthread_self(), sizeof(cpuset_t), &cset);
+
+        int cpu_idx = 0;
+
+        {   // decrease by one cpu core
+            if ( CPU_COUNT(&cset) > 1 ){
+                while(1){
+                    if ( CPU_ISSET(cpu_idx, &cset) ){
+                        CPU_CLR(cpu_idx, &cset);
+        				cpu_idx++;
+                        break;
+                    }
+                    
+                    cpu_idx++;
+                }
+            }
+        }
+
+        
+        if ( thread_kind == SSL_TH_KIND_RECV_SEND ){    // decrease by one more cpu core
+            if ( CPU_COUNT(&cset) > 1 ){
+                while(1){
+                    if ( CPU_ISSET(cpu_idx, &cset) ){
+                        CPU_CLR(cpu_idx, &cset);
+						cpu_idx++;
+                        break;
+                    }
+                    
+                    cpu_idx++;
+                }
+            }
+        }
+        
+        pthread_attr_setaffinity_np(attr_p, sizeof(cset), &cset);
+    }
+    else if ( Config.cpuAffinityMap ){
+        // benchmark purpose only
+        
         cpuset_t cset;
         pthread_getaffinity_np(pthread_self(), sizeof(cpuset_t), &cset);
 
         if ( CPU_COUNT(&cset) == 1 ){
-            for( int cpu_idx=0 ; cpu_idx<20 ; cpu_idx++ ){
+        	int cpu_idx = 0;
+            while(1){
                 if ( CPU_ISSET(cpu_idx, &cset) ){
                     CPU_SET(cpu_idx+1, &cset);
                     pthread_attr_setaffinity_np(attr_p, sizeof(cset), &cset);
                     break;
                 }
+                
+                cpu_idx++;
             }
         }
     }
     #endif
     
     pthread_mutex_init(&F->ssl_th_info.ssl_mutex, NULL);
+
+    void *(*start_routine) (void *) = nullptr;
+
+    switch( thread_kind ){
+        case SSL_TH_KIND_RECV_SEND:
+        start_routine = thread_reader_and_writer;
+        break;
+
+        case SSL_TH_KIND_ACCEPT:
+        start_routine = thread_accepter;
+        break;
+
+        case SSL_TH_KIND_CONNECT:
+        start_routine = thread_connecter;
+        break;
+
+        default:
+        // should not reach here
+        break;
+
+    }
 
     int th_ret = pthread_create(th_p, attr_p, start_routine, F);
 
@@ -884,9 +988,13 @@ static void create_ssl_thread_common( int fd, void *(*start_routine) (void *) ){
         return;
     }
 
-    if ( ++thread_counter > max_thread_counter ){
-        max_thread_counter = thread_counter;
-        debugs(98, 2, "max SSL Threads: " << thread_counter);
+    if ( ++thread_counter[0] > max_thread_counter[0] ){
+        max_thread_counter[0] = thread_counter[0];
+        debugs(98, 2, "max SSL Threads: " << thread_counter[0]);
+    }
+    if ( ++thread_counter[F->ssl_th_info.kind] > max_thread_counter[F->ssl_th_info.kind] ){
+        max_thread_counter[F->ssl_th_info.kind] = thread_counter[F->ssl_th_info.kind];
+        debugs(98, 2, "max SSL Threads[" << F->ssl_th_info.kind << "]: " << thread_counter[F->ssl_th_info.kind]);
     }
     
     Comm::SetSelect(fd, COMM_SELECT_READ, read_handler, read_data, 0);
@@ -894,28 +1002,31 @@ static void create_ssl_thread_common( int fd, void *(*start_routine) (void *) ){
     F->timeout = timeout;
 
     debugs(98, 3, "Threads for FD " << fd << "/" << FD_SETSIZE << " launched" );
-    debugs(98, 3, "current Threads: " << thread_counter << "/" << Config.SSL.max_threads );
+    debugs(98, 3, "current Threads: " << thread_counter[0] << "/" << Config.SSL.max_threads );
 
     return;
 }
 
 void create_ssl_read_and_write_thread( int fd ){
+    reconfigureSslProvider();
     if (Config.SSL.enable_read_write_thread){
-        create_ssl_thread_common(fd, thread_reader_and_writer);
+        create_ssl_thread_common(fd, SSL_TH_KIND_RECV_SEND);
         debugs(98, 6, "create_ssl_read_and_write_thread for " << fd << " " << SSL_THREADED(fd));
     }
 }
 
 void create_ssl_accept_thread( int fd ){
+    reconfigureSslProvider();
     if (Config.SSL.enable_accept_thread){
-        create_ssl_thread_common(fd, thread_accepter);
+        create_ssl_thread_common(fd, SSL_TH_KIND_ACCEPT);
         debugs(98, 6, "create_ssl_accept_thread for " << fd << " " << SSL_THREADED(fd));
     }
 }
 
 void create_ssl_connect_thread( int fd ){
+    reconfigureSslProvider();
     if (Config.SSL.enable_connect_thread){
-        create_ssl_thread_common(fd, thread_connecter);
+        create_ssl_thread_common(fd, SSL_TH_KIND_CONNECT);
         debugs(98, 6, "create_ssl_connect_thread for " << fd << " " << SSL_THREADED(fd));
     }
 }
