@@ -1042,7 +1042,7 @@ ConnStateData::abortRequestParsing(const char *const uri)
     http->setErrorUri(uri);
     const int bufsize_request =
 #if USE_OPENSSL
-     (switchedToHttps() && Config.SSL.max_threads) ? Config.readAheadGap : HTTP_REQBUF_SZ;
+     (switchedToHttps() && Config.SSL.useLargeReqBuf) ? Config.readAheadGap : HTTP_REQBUF_SZ;
 #else
      HTTP_REQBUF_SZ;
 #endif
@@ -1379,7 +1379,7 @@ ConnStateData::parseHttpRequest(const Http1::RequestParserPointer &hp)
     http->req_sz = hp->messageHeaderSize();
     const int bufsize_request =
 #if USE_OPENSSL
-     (switchedToHttps() && Config.SSL.max_threads) ? Config.readAheadGap : HTTP_REQBUF_SZ;
+     (switchedToHttps() && Config.SSL.useLargeReqBuf) ? Config.readAheadGap : HTTP_REQBUF_SZ;
 #else
      HTTP_REQBUF_SZ;
 #endif
@@ -3255,7 +3255,7 @@ ConnStateData::buildFakeRequest(SBuf &useHost, unsigned short usePort, const SBu
     ClientHttpRequest *http = new ClientHttpRequest(this);
     const int bufsize_request =
 #if USE_OPENSSL
-     (switchedToHttps() && Config.SSL.max_threads) ? Config.readAheadGap : HTTP_REQBUF_SZ;
+     (switchedToHttps() && Config.SSL.useLargeReqBuf) ? Config.readAheadGap : HTTP_REQBUF_SZ;
 #else
      HTTP_REQBUF_SZ;
 #endif

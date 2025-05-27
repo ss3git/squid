@@ -2313,6 +2313,17 @@ DOC_START
 	Maximum number of threads used for OpenSSL I/O.
 DOC_END
 
+NAME: ssl_use_large_request_buffer
+IFDEF: USE_OPENSSL
+COMMENT: on|off
+TYPE: onoff
+DEFAULT: off
+LOC: Config.SSL.useLargeReqBuf
+DOC_START
+	Use larger buffer for SSL sessions.
+	(Use the buffer size defined by readAheadGap in place of HTTP_REQBUF_SZ.)
+DOC_END
+
 NAME: http_port ascii_port
 TYPE: PortCfg
 DEFAULT: none
