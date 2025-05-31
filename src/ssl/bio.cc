@@ -443,6 +443,8 @@ Ssl::ServerBio::flush(BIO *table)
         helloMsg.consume(ret);
         SSL_MT_MUTEX_IF_CHILD_UNLOCK();
     }
+
+    Ssl::Bio::flush(table);
 }
 
 bool
@@ -531,7 +533,7 @@ Ssl::ClientBio::needReadLock(){
 
 bool
 Ssl::ServerBio::needReadLock(){
-    if (parsedHandshake && rbuf.isEmpty() && !record_){
+    if (parsedHandshake && !(rbufConsumePos < rbuf.length()) && !record_){
         return false;
     }
 

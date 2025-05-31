@@ -30,9 +30,11 @@ static const char *SessionCacheName = "tls_session_cache";
 
 #if ENABLE_SSL_THREAD
 pthread_mutex_t SSL_global_mutex = PTHREAD_MUTEX_INITIALIZER; //PTHREAD_RECURSIVE_MUTEX_INITIALIZER_NP;
-#if _SQUID_FREEBSD_
 pthread_cond_t SSL_global_cond = PTHREAD_COND_INITIALIZER;
+#if _SQUID_FREEBSD_
 volatile u_int atomic_child_is_waiting = ATOMIC_VAR_INIT(0);
+#elif __cplusplus >= 201103L
+std::atomic<unsigned> atomic_child_is_waiting{0u};
 #endif
 
 #ifdef SSL_SUPPORT_PROVIDER

@@ -193,6 +193,8 @@ Store::Disks::callback()
     static int ndir = 0;
 
     do {
+        SSL_MT_MUTEX_YIELD();
+        
         j = 0;
 
         for (int i = 0; i < Config.cacheSwap.n_configured; ++i) {

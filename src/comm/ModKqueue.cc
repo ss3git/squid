@@ -271,7 +271,7 @@ Comm::DoSelect(int msec)
             if ((hdl = F->read_handler) != NULL) {
                 F->read_handler = nullptr;
                 hdl(fd, F->read_data);
-                //SSL_MT_MUTEX_YIELD();
+                SSL_MT_MUTEX_YIELD();
             }
         }
 
@@ -290,7 +290,7 @@ Comm::DoSelect(int msec)
                     
                     F->write_handler = nullptr;
                     hdl(fd, F->write_data);
-                	//SSL_MT_MUTEX_YIELD();
+                	SSL_MT_MUTEX_YIELD();
                 }
             }
         }
