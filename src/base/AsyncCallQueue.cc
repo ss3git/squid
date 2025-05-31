@@ -25,7 +25,7 @@ AsyncCallQueue::fire()
         CodeContext::Reset(call->codeContext);
         debugs(call->debugSection, call->debugLevel, "entering " << *call);
         call->make();
-        //SSL_MT_MUTEX_YIELD();
+        SSL_MT_MUTEX_YIELD();
         debugs(call->debugSection, call->debugLevel, "leaving " << *call);
     }
     if (made)

@@ -877,12 +877,14 @@ static void create_ssl_thread_common( const int fd, const int thread_kind ){
     pthread_attr_init(attr_p);
     pthread_cond_init (cond_p, NULL);
     
-    #if _SQUID_FREEBSD_
 	if ( Config.workers <= 1 ) {
-        // TODO for Linux
-        
+        #if _SQUID_FREEBSD_
         cpuset_t cset;
-        pthread_getaffinity_np(pthread_self(), sizeof(cpuset_t), &cset);
+        #else
+        cpu_set_t cset;
+        #endif
+
+        pthread_getaffinity_np(pthread_self(), sizeof(cset), &cset);
 
         int cpu_idx = 0;
 
@@ -917,26 +919,6 @@ static void create_ssl_thread_common( const int fd, const int thread_kind ){
         
         pthread_attr_setaffinity_np(attr_p, sizeof(cset), &cset);
     }
-    else if ( Config.cpuAffinityMap ){
-        // benchmark purpose only
-        
-        cpuset_t cset;
-        pthread_getaffinity_np(pthread_self(), sizeof(cpuset_t), &cset);
-
-        if ( CPU_COUNT(&cset) == 1 ){
-        	int cpu_idx = 0;
-            while(1){
-                if ( CPU_ISSET(cpu_idx, &cset) ){
-                    CPU_SET(cpu_idx+1, &cset);
-                    pthread_attr_setaffinity_np(attr_p, sizeof(cset), &cset);
-                    break;
-                }
-                
-                cpu_idx++;
-            }
-        }
-    }
-    #endif
     
     pthread_mutex_init(&F->ssl_th_info.ssl_mutex, NULL);
 
