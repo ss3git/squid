@@ -81,6 +81,8 @@ EventLoop::run()
     assert(!Running);
     Running = this;
 
+    Debug::th_init();
+
     SSL_MT_MUTEX_LOCK();
     while (!runOnce()){}
     SSL_MT_MUTEX_UNLOCK();

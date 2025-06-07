@@ -37,6 +37,7 @@ int Debug::SSL_global_locking_count = 0;
 
 #ifdef SSL_THREAD_DEBUG
 pthread_mutex_t Debug::SSL_debug_mutex = PTHREAD_MUTEX_INITIALIZER;
+bool Debug::need_flush = false;
 #endif
 
 /// a counter related to the number of debugs() calls
@@ -1362,6 +1363,13 @@ Debug::Start(const int section, const int level)
 void
 Debug::Finish()
 {
+	#ifdef SSL_THREAD_DEBUG
+    if ( IamChild() ){
+        Debug::need_flush = true;
+        return;
+    }
+    #endif
+
     const LoggingSectionGuard sectionGuard;
 
     // TODO: #include "base/CodeContext.h" instead if doing so works well.

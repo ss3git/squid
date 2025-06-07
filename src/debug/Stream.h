@@ -100,6 +100,42 @@ public:
         #endif
     }
 
+    static void th_init(){
+        #ifdef SSL_THREAD_DEBUG
+        pthread_mutex_destroy(&Debug::SSL_debug_mutex);
+        
+        pthread_mutexattr_t attr;
+        pthread_mutexattr_init(&attr);
+        pthread_mutexattr_settype(&attr, PTHREAD_MUTEX_RECURSIVE);
+        pthread_mutex_init(&Debug::SSL_debug_mutex, &attr);
+        #endif
+    }
+    
+    static void Flush(){
+        #ifdef SSL_THREAD_DEBUG
+        
+        if (IamChild())
+            return;
+
+        if (!need_flush){
+            return;
+        }
+
+        th_lock();
+
+        if (need_flush){
+            need_flush = false;
+            
+            while(Current){
+                Finish();
+            }
+        }
+
+        th_unlock();
+        
+        #endif
+    }
+
     static char *debugOptions;
     static char *cache_log;
     static int rotateNumber;
@@ -114,6 +150,7 @@ public:
     
     #ifdef SSL_THREAD_DEBUG
     static pthread_mutex_t SSL_debug_mutex;
+    static bool need_flush;
     #endif
 
     // TODO: Convert all helpers to use debugs() and NameThisHelper() APIs.
@@ -224,6 +261,7 @@ void ResyncDebugLog(FILE *newDestination);
 #define debugs(SECTION, LEVEL, CONTENT) \
    do { \
         const int _dbg_level = (LEVEL); \
+        Debug::Flush(); \
         if (Debug::Enabled((SECTION), _dbg_level)) { \
             Debug::th_lock(); \
             std::ostream &_dbo = Debug::Start((SECTION), _dbg_level); \

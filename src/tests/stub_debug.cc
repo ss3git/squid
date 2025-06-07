@@ -34,6 +34,7 @@ int Debug::SSL_global_locking_count = 0;
 
 #ifdef SSL_THREAD_DEBUG
 pthread_mutex_t Debug::SSL_debug_mutex = PTHREAD_MUTEX_INITIALIZER;
+bool Debug::need_flush = false;
 #endif
 
 void ResyncDebugLog(FILE *) STUB
