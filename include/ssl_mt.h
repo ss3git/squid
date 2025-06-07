@@ -29,7 +29,9 @@
     #define SSL_THREAD_DEBUG    // enable (thread-safe) debugs() output from child threads
 
     #define SSL_SUPPORT_PROVIDER
-        
+    
+	#define SSL_TERMINATE_IDLE_CHILD	// terminate read/write thread when idle (experimental)
+
 #else
     #define ENABLE_SSL_THREAD 0
     #define ENABLE_SSL_THREAD_ACCEPT 0

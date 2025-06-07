@@ -213,7 +213,7 @@ static int ssl_th_func_common(const int fd, const int type){
                 //IoResult::ioWantRead;
                 return 1;
             }
-            debugs(98,3, "Security::(Accept|Connect) errno = " << errno << " for " << fd);
+            debugs(98, 4, "Security::(Accept|Connect) errno = " << errno << " for " << fd);
         }
 
         debugs(98,6, "ssl_call_result = " << ssl_call_result << " for " << fd);
@@ -227,22 +227,22 @@ static int ssl_th_func_common(const int fd, const int type){
                 return 2;
             case 0:
                 //IoResult::ioError;
-                debugs(98,4, "ssl_call_result error = " << ssl_call_result);
+                debugs(98, 5, "ssl_call_result error = " << ssl_call_result);
                 return -2;
             default:
                 //IoResult::ioError;
-                debugs(98,4, "ssl_call_result error = " << ssl_call_result << " for " << fd);
+                debugs(98, 5, "ssl_call_result error = " << ssl_call_result << " for " << fd);
                 return -1;
         }
     }
 
     if ( fd_table[fd].ssl_th_info.ssl_threaded == 0 ){
         if ( type == 1 ){
-            debugs(98,3, "create_ssl_accept_thread for " << fd);
+            debugs(98, 4, "create_ssl_accept_thread for " << fd);
             create_ssl_accept_thread(fd);
         }
         else{
-            debugs(98,3, "create_ssl_connect_thread for " << fd);
+            debugs(98, 4, "create_ssl_connect_thread for " << fd);
             create_ssl_connect_thread(fd);
         }
 

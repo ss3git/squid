@@ -181,14 +181,18 @@ public:
     CodeContextPointer codeContext;
 
     struct {
-        int ssl_threaded;	// 0: non-thread, 1: threaded, 2: to be stopped, -1: threading failed
+        int ssl_threaded;
+        	// 0: non-thread, 1: threaded, -1: threading failed
+        	// 2: idle child termination started (target fd replaced to real_fd)
+        	// 3: waiting child termination
+        	// 10: deter child termination (flushing write side)
         void *ssl_session;
         int piped_read_fd;
         int piped_write_fd;
         int piped_read_fd_at_thread;
         int piped_write_fd_at_thread;
-        uint64_t ssl_traffic_counter_read;
-        uint64_t ssl_traffic_counter_write;
+        //uint64_t ssl_traffic_counter_read;    // deprecated
+        //uint64_t ssl_traffic_counter_write;   // deprecated
         int ssl_max_write_size;
         int real_fd;
         int destroying;
@@ -197,8 +201,16 @@ public:
         pthread_attr_t attr;
         pthread_cond_t th_cond;
         int error_flag;
+        int recv_terminated;
         int thread_stage;  // 0: thread init not done, 1: thread running, 2: thread flushing buffer, 3: thread finished
         int kind;  // 1: recv_send, 2: accept, 3: connect
+		#ifdef SSL_TERMINATE_IDLE_CHILD
+        int idle_child_is_dying;
+        	//-1: parent is requesting fallback
+        	// 0: normal child state
+        	// 1: idle child termination started
+        	// 2: idle child termination finished
+        #endif
     } ssl_th_info;
 
 private:
@@ -210,8 +222,8 @@ private:
 #if ENABLE_SSL_THREAD
     
 	#define SSL_THREADED(fd)    ((fd_table[fd].ssl) && (fd_table[fd].ssl_th_info.ssl_threaded > 0))
-	#define SSL_GET_RD_FD(fd)   (SSL_THREADED(fd) ? fd_table[fd].ssl_th_info.piped_read_fd : (fd))
-	#define SSL_GET_WR_FD(fd)   (SSL_THREADED(fd) && (fd_table[fd].ssl_th_info.ssl_threaded == 1) ? fd_table[fd].ssl_th_info.piped_write_fd : (fd))
+	#define SSL_GET_RD_FD(fd)   ((SSL_THREADED(fd) && fd_table[fd].ssl_th_info.piped_read_fd) ? fd_table[fd].ssl_th_info.piped_read_fd : (fd))
+	#define SSL_GET_WR_FD(fd)   ((SSL_THREADED(fd) && fd_table[fd].ssl_th_info.piped_write_fd) ? fd_table[fd].ssl_th_info.piped_write_fd : (fd))
 	#define SSL_GET_REAL_FD(fd) ((fd_table[fd].ssl && fd_table[fd].ssl_th_info.real_fd) \
 				? fd_table[fd].ssl_th_info.real_fd : (fd))
 	int destroy_child(int fd, bool force);

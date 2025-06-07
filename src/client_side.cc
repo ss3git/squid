@@ -3882,15 +3882,15 @@ ConnStateData::handleIdleClientPinnedTlsRead()
         const int readResult =
         		read(fd_table[pinning.serverConnection->fd].ssl_th_info.piped_read_fd, buf, sizeof(buf));
 
-        debugs(98, 2, "handleIdleClientPinnedTlsRead called for FD " 
+        debugs(98, 3, "handleIdleClientPinnedTlsRead called for FD " 
     							<< pinning.serverConnection->fd );
 
         if (readResult > 0) {
-            debugs(98, 2, pinning.serverConnection << " TLS application data read");
+            debugs(98, 3, pinning.serverConnection << " TLS application data read");
             return false;
         }
 
-        debugs(98, 2, pinning.serverConnection << " TLS error ? " );
+        debugs(98, 3, pinning.serverConnection << " TLS error ? " );
         return false;
     }
 

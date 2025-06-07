@@ -816,7 +816,7 @@ old_comm_reset_close(int fd)
 static void
 comm_close_complete(const int fd)
 {
-    debugs(98, 3, "comm_close_complete " << fd);
+    debugs(98, 4, "comm_close_complete " << fd);
 
     auto F = &fd_table[fd];
     F->ssl.reset();
@@ -917,7 +917,7 @@ commTlsThreadStopHandler(int fd, void *data)
             // child thread has started finish process
             // do this again later to parallelize processes
 
-            debugs(98, 3, "async comm_close process " << fd);
+            debugs(98, 4, "async comm_close process " << fd);
 
             // monitor pipe read
             fd_table[fd].flags.read_pending = false;
