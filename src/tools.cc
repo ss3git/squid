@@ -546,7 +546,7 @@ getMyHostname(void)
 const char *
 uniqueHostname(void)
 {
-    debugs(21, 3, " Config: '" << Config.uniqueHostname << "'");
+    debugs(21, 3, " Config: '" << (Config.uniqueHostname ? Config.uniqueHostname : getMyHostname()) << "'");
     return Config.uniqueHostname ? Config.uniqueHostname : getMyHostname();
 }
 
