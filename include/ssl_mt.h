@@ -48,6 +48,7 @@
         #include <openssl/provider.h>
         extern OSSL_PROVIDER *ssl_provider;
         extern int need_ssl_provider_reconfigure;
+        void reconfigureSslProvider();
     #endif
 
 

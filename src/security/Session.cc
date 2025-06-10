@@ -529,7 +529,7 @@ static void *thread_reader_and_writer( void *args ){
     
 }
 
-static void reconfigureSslProvider(){
+void reconfigureSslProvider(){
     #ifdef SSL_SUPPORT_PROVIDER
     if ( ! need_ssl_provider_reconfigure ){
         return;

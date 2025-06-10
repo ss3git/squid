@@ -961,6 +961,9 @@ mainReconfigureFinish(void *)
 #endif
 #if USE_OPENSSL
     Ssl::CertValidationHelper::Reconfigure();
+    #ifdef SSL_SUPPORT_PROVIDER
+    reconfigureSslProvider();
+    #endif
 #endif
 
     redirectReconfigure();
@@ -1294,7 +1297,10 @@ mainInitialize(void)
 
     eventAdd("memPoolCleanIdlePools", Mem::CleanIdlePools, nullptr, 15.0, 1);
 
+#ifdef SSL_SUPPORT_PROVIDER
     need_ssl_provider_reconfigure = 1;
+    reconfigureSslProvider();
+#endif
     
     configured_once = 1;
 }
