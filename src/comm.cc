@@ -900,6 +900,15 @@ commTlsThreadStopHandler(int fd, void *data)
     debugs(98, 9, "FD " << fd << ", client_data=" << data);
            
     #if ENABLE_SSL_THREAD
+    if (is_ssl_child_thread()){
+    	// workaround for rare case half-closed session stuck
+        child_debugs(98, 1, "async comm_close process " << fd);
+
+        const auto startCall = asyncCall(98, 1, "_comm_close2",
+                                         callDialer(_comm_close2, fd));
+        ScheduleCallHere(startCall);
+        return;
+    }
     if (SSL_THREADED(fd)){
         if ( data == NULL ) debugs(98, 6, "commTlsThreadStopHandler call " << fd);
 

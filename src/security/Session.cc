@@ -122,6 +122,10 @@ static void *thread_reader_and_writer( void *args ){
 	#endif
 
     int last_chance = 0;
+
+	const int HALF_CLOSE_TIMER_TH = 10;
+    int half_close_timer = 0;
+    int half_close_timer_expired = 0;
     
     pthread_mutex_lock(ssl_mutex_p);
     F_real->ssl_th_info.thread_stage = 1;
@@ -154,6 +158,8 @@ static void *thread_reader_and_writer( void *args ){
                     int error = SSL_get_error(session, read_size);
                     
                     if ( kill_read_if_empty || !( error == SSL_ERROR_WANT_WRITE || error == SSL_ERROR_WANT_READ ) ){
+                        //child_debugs(98, 1, "SSL_get_error: " << error << " " << real_fd);
+
                         kill_read_if_empty = 0;
 
                         error_ssl_read_side = 1;
@@ -356,7 +362,7 @@ static void *thread_reader_and_writer( void *args ){
             
             //debugs() is now thread safe
             if ( error_ssl_read_side || error_ssl_write_side ){
-                child_debugs(98, 5, "in select, errors: " << error_ssl_read_side << " " << error_ssl_write_side << " " << real_fd);
+                child_debugs(98, 5, "in select, errors: " << error_ssl_read_side << " " << error_ssl_write_side << " " << error_real_fd << " " << i_am_dying << " " << real_fd);
             }
             
             if (destroying){
@@ -427,6 +433,25 @@ static void *thread_reader_and_writer( void *args ){
 
             if ( ret == 0 ){
                 child_debugs(98, 6, "select timeout " << real_fd);
+                
+                if (error_ssl_read_side){
+                    int read_ret = read(real_fd, buf_R, TH_BUF_SIZE);
+
+                    child_debugs(98, 1, "already dead read: " << read_ret << " " << real_fd);
+
+                    if (write_buf_to_ssl_head == write_buf_to_ssl_tail){
+                        child_debugs(98, 1, "half_close_timer: " << half_close_timer << " " << real_fd);
+                        half_close_timer++;
+                    }
+
+                    if ( half_close_timer > HALF_CLOSE_TIMER_TH ){
+                        error_ssl_write_side = 1;
+                        half_close_timer_expired = 1;
+                    }
+                }
+            }
+            else{
+                half_close_timer = 0;
             }
 
             if (FD_ISSET(real_fd, &efds)){
@@ -505,6 +530,20 @@ static void *thread_reader_and_writer( void *args ){
     }
 
     child_debugs(98, 6, "trace lock ssl_mutex_p  " << real_fd);
+
+    if (half_close_timer_expired){
+            
+        child_debugs(98, 1, "comm_close from child  " << real_fd);
+
+        SSL_MT_MUTEX_IF_CHILD_LOCK();
+
+        void _comm_close(int fd, char const *file, int line);
+        #define comm_close(x) (_comm_close((x), __FILE__, __LINE__))
+
+        comm_close(real_fd);
+                
+        SSL_MT_MUTEX_IF_CHILD_UNLOCK();
+    }
 
     pthread_mutex_lock(ssl_mutex_p);
 
@@ -1037,7 +1076,11 @@ static void create_ssl_thread_common( const int fd, const int thread_kind ){
     F->timeout = timeout;
 
     debugs(98, 4, "Threads for FD " << fd << "/" << FD_SETSIZE << " launched" );
-    debugs(98, 4, "current Threads: " << thread_counter[0] << "/" << Config.SSL.max_threads );
+
+    for( int i=0 ; i<(int)(sizeof(thread_counter)/sizeof(thread_counter[0])) ; i++  ){
+        if (thread_counter[i])
+            debugs(98, 4, "current Threads[" << i << "]: " << thread_counter[i] << "/" << Config.SSL.max_threads );
+    }
 
     return;
 }
