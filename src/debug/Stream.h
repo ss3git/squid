@@ -111,31 +111,6 @@ public:
         #endif
     }
     
-    static void Flush(){
-        #ifdef SSL_THREAD_DEBUG
-        
-        if (IamChild())
-            return;
-
-        if (!need_flush){
-            return;
-        }
-
-        th_lock();
-
-        if (need_flush){
-            need_flush = false;
-            
-            while(Current){
-                Finish();
-            }
-        }
-
-        th_unlock();
-        
-        #endif
-    }
-
     static char *debugOptions;
     static char *cache_log;
     static int rotateNumber;
@@ -174,6 +149,8 @@ public:
     static std::ostringstream &Start(const int section, const int level);
     /// logs output buffer created in Start() and closes debugging context
     static void Finish();
+    static void Flush();
+    static void _flush();
 
     /// configures the active debugging context to write syslog ALERT
     static void ForceAlert();

@@ -91,6 +91,18 @@ Debug::Start(const int section, const int level)
 }
 
 void
+Debug::Flush()
+{
+    return;
+}
+
+void
+Debug::_flush()
+{
+    return;
+}
+
+void
 Debug::Finish()
 {
     if (Current) {

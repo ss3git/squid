@@ -1419,3 +1419,55 @@ ForceAlert(std::ostream& s)
     return s;
 }
 
+// flush logs by timeline
+void Debug::Flush(){
+    #ifdef SSL_THREAD_DEBUG
+    
+    if (IamChild())
+        return;
+
+    if (!need_flush){
+        return;
+    }
+
+    th_lock();
+
+    if (need_flush){
+        need_flush = false;
+        _flush();
+        while(Current){
+		    Current->forceAlert = false;
+		
+		    Context *past = Current;
+		    Current = past->upper;
+		    if (Current)
+		        delete past;
+        }
+    }
+
+    th_unlock();
+    
+    #endif
+}
+
+void Debug::_flush(){
+    #ifdef SSL_THREAD_DEBUG
+    if (!Current){
+    	return;
+    }
+    
+    Context *past = Current;
+    Current = past->upper;
+    _flush();
+    Current = past;
+
+    const LoggingSectionGuard sectionGuard;
+
+    extern std::ostream &CurrentCodeContextDetail(std::ostream &os);
+    if (Current->level <= DBG_IMPORTANT)
+        Current->buf << CurrentCodeContextDetail;
+        
+    LogMessage(*Current);
+    
+    #endif
+}
