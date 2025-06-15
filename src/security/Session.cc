@@ -143,7 +143,7 @@ static void *thread_reader_and_writer( void *args ){
 
                 child_debugs(98, 8, "read from ssl side. " << real_fd);
 
-                int read_size = SSL_read(session, buf_R, TH_BUF_SIZE);
+                int read_size = SSL_read(session, buf_R, sizeof(buf_R));
 
                 if ( read_size > 0 ){
                     // read ok
@@ -207,7 +207,7 @@ static void *thread_reader_and_writer( void *args ){
 
                 child_debugs(98, 8, "read from parent side. " << real_fd);
 
-                int read_size = read(piped_read_fd_at_thread, buf_W, TH_BUF_SIZE);
+                int read_size = read(piped_read_fd_at_thread, buf_W, sizeof(buf_W));
 
                 if ( read_size > 0 ){
                     // ok
@@ -241,8 +241,8 @@ static void *thread_reader_and_writer( void *args ){
                 }
                 #endif
 
-                // max. 16KB for a cycle
-                const int w = SSL_write(session, buf_W+write_buf_to_ssl_tail, min(16*1024, w_size));
+                // may partially be written if TH_BUF_SIZE > 16KB
+                const int w = SSL_write(session, buf_W+write_buf_to_ssl_tail, w_size);
                 
                 if ( w > 0 ){
                     // ok
@@ -435,9 +435,9 @@ static void *thread_reader_and_writer( void *args ){
                 child_debugs(98, 6, "select timeout " << real_fd);
                 
                 if (error_ssl_read_side){
-                    int read_ret = read(real_fd, buf_R, TH_BUF_SIZE);
+                    const int peek_ret = recv(real_fd, buf_R, sizeof(buf_R), MSG_PEEK);
 
-                    child_debugs(98, 1, "already dead read: " << read_ret << " " << real_fd);
+                    child_debugs(98, 1, "already dead read: " << peek_ret << " " << real_fd);
 
                     if (write_buf_to_ssl_head == write_buf_to_ssl_tail){
                         child_debugs(98, 1, "half_close_timer: " << half_close_timer << " " << real_fd);
