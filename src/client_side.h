@@ -249,7 +249,7 @@ public:
 
     /// Starts or resumes accepting a TLS connection. TODO: Make this helper
     /// method protected after converting clientNegotiateSSL() into a method.
-    Security::IoResult acceptTls();
+    Security::IoResult acceptTls(bool thread);
 
     /// the second part of old httpsAccept, waiting for future HttpsServer home
     void postHttpsAccept();

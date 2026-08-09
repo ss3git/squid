@@ -31,6 +31,16 @@ int Debug::Levels[MAX_DEBUG_SECTIONS];
 char *Debug::cache_log = nullptr;
 int Debug::rotateNumber = -1;
 
+#if ENABLE_SSL_THREAD
+pthread_t Debug::SSL_global_locking_thread = 0;
+int Debug::SSL_global_locking_count = 0;
+#endif
+
+#ifdef SSL_THREAD_DEBUG
+pthread_mutex_t Debug::SSL_debug_mutex = PTHREAD_MUTEX_INITIALIZER;
+bool Debug::need_flush = false;
+#endif
+
 /// a counter related to the number of debugs() calls
 using DebugRecordCount = uint64_t;
 
@@ -1365,6 +1375,13 @@ Debug::Start(const int section, const int level)
 void
 Debug::Finish()
 {
+	#ifdef SSL_THREAD_DEBUG
+    if ( IamChild() ){
+        Debug::need_flush = true;
+        return;
+    }
+    #endif
+
     const LoggingSectionGuard sectionGuard;
 
     // TODO: #include "base/CodeContext.h" instead if doing so works well.
@@ -1414,3 +1431,55 @@ ForceAlert(std::ostream& s)
     return s;
 }
 
+// flush logs by timeline
+void Debug::Flush(){
+    #ifdef SSL_THREAD_DEBUG
+    
+    if (IamChild())
+        return;
+
+    if (!need_flush){
+        return;
+    }
+
+    th_lock();
+
+    if (need_flush){
+        need_flush = false;
+        _flush();
+        while(Current){
+		    Current->forceAlert = false;
+		
+		    Context *past = Current;
+		    Current = past->upper;
+		    if (Current)
+		        delete past;
+        }
+    }
+
+    th_unlock();
+    
+    #endif
+}
+
+void Debug::_flush(){
+    #ifdef SSL_THREAD_DEBUG
+    if (!Current){
+    	return;
+    }
+    
+    Context *past = Current;
+    Current = past->upper;
+    _flush();
+    Current = past;
+
+    const LoggingSectionGuard sectionGuard;
+
+    extern std::ostream &CurrentCodeContextDetail(std::ostream &os);
+    if (Current->level <= DBG_IMPORTANT)
+        Current->buf << CurrentCodeContextDetail;
+        
+    LogMessage(*Current);
+    
+    #endif
+}

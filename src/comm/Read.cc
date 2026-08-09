@@ -185,6 +185,11 @@ comm_read_cancel(int fd, IOCB *callback, void *data)
         return;
     }
 
+    if (isClosing(fd)){
+        debugs(98, 2, "fails: FD " << fd << " is already being closed");
+        return;
+    }
+
     Comm::IoCallback *cb = COMMIO_FD_READCB(fd);
     // TODO: is "active" == "monitors FD"?
     if (!cb->active()) {
@@ -225,6 +230,11 @@ Comm::ReadCancel(int fd, AsyncCall::Pointer &callback)
         return;
     }
 
+    if (isClosing(fd)){
+        debugs(98, 2, "fails: FD " << fd << " is already being closed");
+        return;
+    }
+    
     Comm::IoCallback *cb = COMMIO_FD_READCB(fd);
 
     if (!cb->active()) {

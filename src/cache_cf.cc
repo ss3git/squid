@@ -1054,6 +1054,19 @@ configDoConfigure(void)
         }
     }
 #endif
+
+#if ENABLE_SSL_THREAD
+    if (!Config.SSL.max_threads) {
+    	Config.SSL.enable_read_write_thread = 0;
+    	
+        #if ENABLE_SSL_THREAD_ACCEPT
+        Config.SSL.enable_accept_thread = 0;
+        #endif
+        #if ENABLE_SSL_THREAD_CONNECT
+        Config.SSL.enable_connect_thread = 0;
+        #endif
+    }
+#endif
 }
 
 /** Parse a line containing an obsolete directive.

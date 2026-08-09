@@ -712,6 +712,9 @@ void
 reconfigure(int sig)
 {
     do_reconfigure = 1;
+#ifdef SSL_SUPPORT_PROVIDER
+    need_ssl_provider_reconfigure = 1;
+#endif
     ReconfigureSignal = sig;
 #if !_SQUID_WINDOWS_
 #if !HAVE_SIGACTION
@@ -895,6 +898,15 @@ mainReconfigureFinish(void *)
     errorClean();
     enter_suid();       /* root to read config file */
 
+    #ifdef SSL_SUPPORT_PROVIDER
+    if ( ssl_provider != nullptr ){ // OpenSSL 3.5 incompatibility fix
+	    OSSL_PROVIDER_unload(ssl_provider);
+	    ssl_provider = nullptr;
+        need_ssl_provider_reconfigure = 1;
+	    debugs(98, 2, "OSSL_PROVIDER_unload");
+	}
+    #endif
+
     // we may have disabled the need for PURGE
     if (Config2.onoff.enable_purge)
         Config2.onoff.enable_purge = 2;
@@ -958,6 +970,9 @@ mainReconfigureFinish(void *)
 #endif
 #if USE_OPENSSL
     Ssl::CertValidationHelper::Reconfigure();
+    #ifdef SSL_SUPPORT_PROVIDER
+    reconfigureSslProvider();
+    #endif
 #endif
 
     redirectReconfigure();
@@ -1291,6 +1306,11 @@ mainInitialize(void)
 
     eventAdd("memPoolCleanIdlePools", Mem::CleanIdlePools, nullptr, 15.0, 1);
 
+#ifdef SSL_SUPPORT_PROVIDER
+    need_ssl_provider_reconfigure = 1;
+    reconfigureSslProvider();
+#endif
+    
     configured_once = 1;
 }
 
@@ -2132,6 +2152,14 @@ SquidShutdown()
     RunRegisteredHere(RegisteredRunner::finishShutdown);
 
     memClean();
+    
+    #ifdef SSL_SUPPORT_PROVIDER
+    if ( ssl_provider != nullptr ){
+	    OSSL_PROVIDER_unload(ssl_provider);
+	    ssl_provider = nullptr;
+	    debugs(98, 2, "OSSL_PROVIDER_unload");
+	}
+    #endif
 
     debugs(1, Important(10), "Squid Cache (Version " << version_string << "): Exiting normally.");
 

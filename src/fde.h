@@ -17,6 +17,7 @@
 #include "ip/forward.h"
 #include "security/forward.h"
 #include "typedefs.h" //DRCB, DWCB
+#include "ssl_mt.h"
 
 #if USE_DELAY_POOLS
 #include "MessageBucket.h"
@@ -180,11 +181,75 @@ public:
     /// What the I/O handlers are supposed to work on.
     CodeContextPointer codeContext;
 
+    struct {
+        int ssl_threaded;
+        	// 0: non-thread, 1: threaded, -1: threading failed
+        	// 2: idle child termination started (target fd replaced to real_fd)
+        	// 3: waiting child termination
+        	// 10: deter child termination (flushing write side)
+        void *ssl_session;
+        int piped_read_fd;
+        int piped_write_fd;
+        int piped_read_fd_at_thread;
+        int piped_write_fd_at_thread;
+        //uint64_t ssl_traffic_counter_read;    // deprecated
+        //uint64_t ssl_traffic_counter_write;   // deprecated
+        int ssl_max_write_size;
+        int real_fd;
+        int destroying;
+        pthread_mutex_t ssl_mutex;
+        pthread_t th;
+        pthread_attr_t attr;
+        pthread_cond_t th_cond;
+        #if ENABLE_SSL_THREAD_ACCEPT_REUSE
+        int keep_accepted_thread;
+        #endif
+        int error_flag;
+        int recv_terminated;
+        int thread_stage;  // 0: thread init not done, 1: thread running, 2: thread flushing buffer, 3: thread finished
+        int kind;  // 1: recv_send, 2: accept, 3: connect
+		#ifdef SSL_TERMINATE_IDLE_CHILD
+        volatile u_int idle_child_is_dying;
+        	// -1 (0xffffffff): not able to terminate now (parent set)
+        	// 0: normal child state
+        	// 1: idle child termination preparation (still cancelable)
+        	// 2: idle child termination started
+        	// 3: idle child termination finished
+            
+        volatile u_int pipe_from_child_read_bytes_counter;
+        volatile u_int pipe_to_child_written_bytes_counter;
+        
+        volatile u_int pipe_from_parent_read_bytes_counter;
+        volatile u_int pipe_to_parent_written_bytes_counter;
+        #endif
+    } ssl_th_info;
+
 private:
     // I/O methods connect Squid to the device/stack/library fde represents
     READ_HANDLER *readMethod_ = nullptr; ///< imports bytes into Squid
     WRITE_HANDLER *writeMethod_ = nullptr; ///< exports Squid bytes
 };
+
+#if ENABLE_SSL_THREAD
+    
+	#define SSL_THREADED(fd)    (((fd_table[fd].ssl) && (fd_table[fd].ssl_th_info.ssl_threaded > 0)) ? fd_table[fd].ssl_th_info.ssl_threaded : 0)
+	#define SSL_GET_RD_FD(fd)   ((SSL_THREADED(fd) && fd_table[fd].ssl_th_info.piped_read_fd) ? fd_table[fd].ssl_th_info.piped_read_fd : (fd))
+	#define SSL_GET_WR_FD(fd)   ((SSL_THREADED(fd) && fd_table[fd].ssl_th_info.piped_write_fd) ? fd_table[fd].ssl_th_info.piped_write_fd : (fd))
+	#define SSL_GET_REAL_FD(fd) ((fd_table[fd].ssl && fd_table[fd].ssl_th_info.real_fd) \
+				? fd_table[fd].ssl_th_info.real_fd : (fd))
+	int destroy_child(int fd, bool force);
+	
+    void create_ssl_read_and_write_thread(int fd);
+    void create_ssl_accept_thread(int fd);
+    void create_ssl_connect_thread(int fd);
+    
+#else
+
+	#define SSL_THREADED(fd)    (0)
+	#define SSL_GET_RD_FD(fd)   (fd)
+	#define SSL_GET_WR_FD(fd)   (fd)
+	#define SSL_GET_REAL_FD(fd) (fd)
+#endif
 
 #define fd_table fde::Table
 

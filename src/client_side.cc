@@ -1000,10 +1000,16 @@ ConnStateData::abortRequestParsing(const char *const uri)
     ClientHttpRequest *http = new ClientHttpRequest(this);
     http->req_sz = inBuf.length();
     http->setErrorUri(uri);
-    auto *context = new Http::Stream(clientConnection, http);
+    const int bufsize_request =
+#if USE_OPENSSL
+     (switchedToHttps() && Config.SSL.useLargeReqBuf) ? Config.readAheadGap : HTTP_REQBUF_SZ;
+#else
+     HTTP_REQBUF_SZ;
+#endif
+    auto *context = new Http::Stream(clientConnection, http, bufsize_request);
     StoreIOBuffer tempBuffer;
     tempBuffer.data = context->reqbuf;
-    tempBuffer.length = HTTP_REQBUF_SZ;
+    tempBuffer.length = context->reqbuf_size;
     clientStreamInit(&http->client_stream, clientGetMoreData, clientReplyDetach,
                      clientReplyStatus, new clientReplyContext(http), clientSocketRecipient,
                      clientSocketDetach, context, tempBuffer);
@@ -1327,11 +1333,17 @@ ConnStateData::parseHttpRequest(const Http1::RequestParserPointer &hp)
     ClientHttpRequest *http = new ClientHttpRequest(this);
 
     http->req_sz = hp->messageHeaderSize();
-    Http::Stream *result = new Http::Stream(clientConnection, http);
+    const int bufsize_request =
+#if USE_OPENSSL
+     (switchedToHttps() && Config.SSL.useLargeReqBuf) ? Config.readAheadGap : HTTP_REQBUF_SZ;
+#else
+     HTTP_REQBUF_SZ;
+#endif
+    Http::Stream *result = new Http::Stream(clientConnection, http, bufsize_request);
 
     StoreIOBuffer tempBuffer;
     tempBuffer.data = result->reqbuf;
-    tempBuffer.length = HTTP_REQBUF_SZ;
+    tempBuffer.length = result->reqbuf_size;
 
     ClientStreamData newServer = new clientReplyContext(http);
     ClientStreamData newClient = result;
@@ -2217,9 +2229,9 @@ ConnStateData::whenClientIpKnown()
 }
 
 Security::IoResult
-ConnStateData::acceptTls()
+ConnStateData::acceptTls(bool thread)
 {
-    const auto handshakeResult = Security::Accept(*clientConnection);
+    const auto handshakeResult = Security::Accept(*clientConnection, thread);
 
 #if USE_OPENSSL
     // log ASAP, even if the handshake has not completed (or failed)
@@ -2279,7 +2291,7 @@ clientNegotiateSSL(int fd, void *data)
 {
     ConnStateData *conn = (ConnStateData *)data;
 
-    const auto handshakeResult = conn->acceptTls();
+    const auto handshakeResult = conn->acceptTls(true);
     switch (handshakeResult.category) {
     case Security::IoResult::ioSuccess:
         break;
@@ -2382,6 +2394,17 @@ clientNegotiateSSL(int fd, void *data)
         Must(conn->pipeline.empty());
     }
     /* careful: finished() above frees request, host, etc. */
+
+    #if ENABLE_SSL_THREAD_ACCEPT_REUSE
+    if ( SSL_THREADED(fd) && fd_table[fd].ssl_th_info.keep_accepted_thread ){
+        int ack_fd = SSL_GET_WR_FD(fd);
+        int ret = write(ack_fd, &ack_fd, sizeof(int));
+        if ( ret <= 0 ){
+            debugs(98, 1, "keep thread error " << fd);
+        }
+        fd_table[fd].ssl_th_info.kind = SSL_TH_KIND_RECV_SEND;
+    }
+    #endif
 
     conn->readSomeData();
 }
@@ -3002,7 +3025,7 @@ ConnStateData::startPeekAndSplice()
     // expect Security::Accept() to ask us to write (our) TLS server Hello. We
     // also allow an ioWantRead result in case some fancy TLS extension that
     // Squid does not yet understand requires reading post-Hello client bytes.
-    const auto handshakeResult = acceptTls();
+    const auto handshakeResult = acceptTls(false);
     if (!handshakeResult.wantsIo())
         return handleSslBumpHandshakeError(handshakeResult);
 
@@ -3165,11 +3188,17 @@ ClientHttpRequest *
 ConnStateData::buildFakeRequest(SBuf &useHost, const AnyP::KnownPort usePort, const SBuf &payload)
 {
     ClientHttpRequest *http = new ClientHttpRequest(this);
-    Http::Stream *stream = new Http::Stream(clientConnection, http);
+    const int bufsize_request =
+#if USE_OPENSSL
+     (switchedToHttps() && Config.SSL.useLargeReqBuf) ? Config.readAheadGap : HTTP_REQBUF_SZ;
+#else
+     HTTP_REQBUF_SZ;
+#endif
+    Http::Stream *stream = new Http::Stream(clientConnection, http, bufsize_request);
 
     StoreIOBuffer tempBuffer;
     tempBuffer.data = stream->reqbuf;
-    tempBuffer.length = HTTP_REQBUF_SZ;
+    tempBuffer.length = stream->reqbuf_size;
 
     ClientStreamData newServer = new clientReplyContext(http);
     ClientStreamData newClient = stream;
@@ -3775,6 +3804,23 @@ ConnStateData::handleIdleClientPinnedTlsRead()
         return false;
 
     char buf[1];
+
+    if (fd_table[pinning.serverConnection->fd].ssl_th_info.ssl_threaded > 0){
+        const int readResult =
+        		read(fd_table[pinning.serverConnection->fd].ssl_th_info.piped_read_fd, buf, sizeof(buf));
+
+        debugs(98, 3, "handleIdleClientPinnedTlsRead called for FD " 
+    							<< pinning.serverConnection->fd );
+
+        if (readResult > 0) {
+            debugs(98, 3, pinning.serverConnection << " TLS application data read");
+            return false;
+        }
+
+        debugs(98, 3, pinning.serverConnection << " TLS error ? " );
+        return false;
+    }
+
     const int readResult = SSL_read(ssl, buf, sizeof(buf));
 
     if (readResult > 0 || SSL_pending(ssl) > 0) {

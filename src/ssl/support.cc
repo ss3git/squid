@@ -160,6 +160,8 @@ ssl_ask_password(SSL_CTX * context, const char * prompt)
 static RSA *
 ssl_temp_rsa_cb(SSL *, int, int keylen)
 {
+    SSL_MT_MUTEX_IF_CHILD_LOCK();
+
     static RSA *rsa_512 = nullptr;
     static RSA *rsa_1024 = nullptr;
     static BIGNUM *e = nullptr;
@@ -172,6 +174,9 @@ ssl_temp_rsa_cb(SSL *, int, int keylen)
             debugs(83, DBG_IMPORTANT, "ERROR: ssl_temp_rsa_cb: Failed to set exponent for key " << keylen);
             BN_free(e);
             e = nullptr;
+
+            SSL_MT_MUTEX_IF_CHILD_UNLOCK();
+
             return nullptr;
         }
     }
@@ -210,11 +215,17 @@ ssl_temp_rsa_cb(SSL *, int, int keylen)
 
     default:
         debugs(83, DBG_IMPORTANT, "ERROR: ssl_temp_rsa_cb: Unexpected key length " << keylen);
+
+        SSL_MT_MUTEX_IF_CHILD_UNLOCK();
+
         return nullptr;
     }
 
     if (rsa == NULL) {
         debugs(83, DBG_IMPORTANT, "ERROR: ssl_temp_rsa_cb: Failed to generate key " << keylen);
+
+        SSL_MT_MUTEX_IF_CHILD_UNLOCK();
+
         return nullptr;
     }
 
@@ -224,6 +235,8 @@ ssl_temp_rsa_cb(SSL *, int, int keylen)
 
         debugs(83, DBG_IMPORTANT, "Generated ephemeral RSA key of length " << keylen);
     }
+
+    SSL_MT_MUTEX_IF_CHILD_UNLOCK();
 
     return rsa;
 }
@@ -340,6 +353,8 @@ Ssl::HasSubjectName(X509 &cert, const AnyP::Host &host)
 static int
 ssl_verify_cb(int ok, X509_STORE_CTX * ctx)
 {
+    SSL_MT_MUTEX_IF_CHILD_LOCK();
+    
     // preserve original ctx->error before SSL_ calls can overwrite it
     Security::ErrorCode error_no = ok ? SSL_ERROR_NONE : X509_STORE_CTX_get_error(ctx);
 
@@ -488,6 +503,8 @@ ssl_verify_cb(int ok, X509_STORE_CTX * ctx)
         else
             debugs(83, 2, "failed to store a " << *peer_cert << " error detail: " << *edp);
     }
+
+    SSL_MT_MUTEX_IF_CHILD_UNLOCK();
 
     return ok;
 }
@@ -1380,6 +1397,8 @@ completeIssuers(X509_STORE_CTX *ctx, STACK_OF(X509) &untrustedCerts)
 static int
 VerifyCtxCertificates(X509_STORE_CTX *ctx, STACK_OF(X509) *extraCerts)
 {
+    SSL_MT_MUTEX_IF_CHILD_LOCK();
+    
     // OpenSSL already maintains ctx->untrusted but we cannot modify
     // internal OpenSSL list directly. We have to give OpenSSL our own
     // list, but it must include certificates on the OpenSSL ctx->untrusted
@@ -1401,6 +1420,9 @@ VerifyCtxCertificates(X509_STORE_CTX *ctx, STACK_OF(X509) *extraCerts)
         completeIssuers(ctx, *untrustedCerts);
 
     X509_STORE_CTX_set0_untrusted(ctx, untrustedCerts.get()); // No locking/unlocking, just sets ctx->untrusted
+    
+	SSL_MT_MUTEX_IF_CHILD_UNLOCK();
+
     int ret = X509_verify_cert(ctx);
     X509_STORE_CTX_set0_untrusted(ctx, oldUntrusted); // Set back the old untrusted list
     return ret;

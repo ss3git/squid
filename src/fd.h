@@ -17,6 +17,8 @@ enum class IoDirection {
     Write
 };
 
+void pipe_free_wrap(const int fd, const int direction);
+int pipe_open_wrap(const int fd, int pipe_read_fd[2], int pipe_write_fd[2]);
 void fd_close(int fd);
 void fd_open(int fd, unsigned int type, const char *);
 void fd_note(int fd, const char *);

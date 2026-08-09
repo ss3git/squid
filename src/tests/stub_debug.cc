@@ -27,6 +27,16 @@ int Debug::override_X = 0;
 bool Debug::log_syslog = false;
 void Debug::ForceAlert() STUB
 
+#if ENABLE_SSL_THREAD
+pthread_t Debug::SSL_global_locking_thread = 0;
+int Debug::SSL_global_locking_count = 0;
+#endif
+
+#ifdef SSL_THREAD_DEBUG
+pthread_mutex_t Debug::SSL_debug_mutex = PTHREAD_MUTEX_INITIALIZER;
+bool Debug::need_flush = false;
+#endif
+
 void ResyncDebugLog(FILE *) STUB
 
 FILE *
@@ -95,6 +105,18 @@ Debug::Start(const int section, const int level)
 {
     Current = new Context(section, level);
     return Current->buf;
+}
+
+void
+Debug::Flush()
+{
+    return;
+}
+
+void
+Debug::_flush()
+{
+    return;
 }
 
 void

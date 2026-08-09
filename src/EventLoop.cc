@@ -15,6 +15,7 @@
 #include "EventLoop.h"
 #include "fatal.h"
 #include "time/Engine.h"
+#include "ssl_mt.h"
 
 EventLoop *EventLoop::Running = nullptr;
 
@@ -80,7 +81,11 @@ EventLoop::run()
     assert(!Running);
     Running = this;
 
-    while (!runOnce());
+    Debug::th_init();
+
+    SSL_MT_MUTEX_LOCK();
+    while (!runOnce()){}
+    SSL_MT_MUTEX_UNLOCK();
 
     Running = nullptr;
 }

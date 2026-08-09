@@ -50,10 +50,20 @@ static int kq;
 
 static struct timespec zero_timespec;
 
-static struct kevent *kqlst;        /* kevent buffer */
-static int kqmax;                /* max structs to buffer */
-static int kqoff;                /* offset into the buffer */
 static int max_poll_time = 1000;
+static int kqmax;                /* max structs to buffer */
+
+// higher priority
+static struct kevent *kqlst_high;        /* kevent buffer */
+static int kqoff_high;                /* offset into the buffer */
+
+// normal priority
+static struct kevent *kqlst_normal;        /* kevent buffer */
+static int kqoff_normal;                /* offset into the buffer */
+
+// lower priority
+static struct kevent *kqlst_low;        /* kevent buffer */
+static int kqoff_low;                /* offset into the buffer */
 
 static void commKQueueRegisterWithCacheManager(void);
 
@@ -63,17 +73,48 @@ static void commKQueueRegisterWithCacheManager(void);
 void
 kq_update_events(int fd, short filter, PF * handler)
 {
+    const int read_fd = SSL_GET_RD_FD(fd);
+    const int write_fd = SSL_GET_WR_FD(fd);
+
+    const int high_prio = (SSL_THREADED(fd) == 1)
+     && (fd_table[fd].ssl_th_info.kind != SSL_TH_KIND_RECV_SEND || filter == EVFILT_WRITE)
+    #ifdef SSL_TERMINATE_IDLE_CHILD
+     && !atomic_load_int(&fd_table[fd].ssl_th_info.idle_child_is_dying)
+    #endif
+        ;
+
+    const int low_prio = (SSL_THREADED(fd) > 1)
+    #ifdef SSL_TERMINATE_IDLE_CHILD
+     || ((SSL_THREADED(fd) == 1)
+         && fd_table[fd].ssl_th_info.kind == SSL_TH_KIND_RECV_SEND
+         && atomic_load_int(&fd_table[fd].ssl_th_info.idle_child_is_dying))
+    #endif
+     || ((SSL_THREADED(fd) == 1)
+         && fd_table[fd].ssl_th_info.kind == SSL_TH_KIND_RECV_SEND
+         && filter == EVFILT_READ
+        #if ENABLE_SSL_THREAD_ACCEPT_REUSE
+         && fd_table[fd].ssl_th_info.keep_accepted_thread == 0  // do not deprioritize request-side read
+        #endif
+        );
+    
+    struct kevent *kqlst = high_prio ? kqlst_high : (low_prio ? kqlst_low : kqlst_normal);
+    int &kqoff = high_prio ? kqoff_high : (low_prio ? kqoff_low : kqoff_normal);
+
     PF *cur_handler;
     int kep_flags;
 
+    int setting_fd;
+    
     switch (filter) {
 
     case EVFILT_READ:
         cur_handler = fd_table[fd].read_handler;
+        setting_fd = read_fd;
         break;
 
     case EVFILT_WRITE:
         cur_handler = fd_table[fd].write_handler;
+        setting_fd = write_fd;
         break;
 
     default:
@@ -90,18 +131,28 @@ kq_update_events(int fd, short filter, PF * handler)
         kep = kqlst + kqoff;
 
         if (handler != NULL) {
-            kep_flags = (EV_ADD | EV_ONESHOT);
+            if ( setting_fd != fd ){
+	            if ( filter == EVFILT_WRITE ){
+	                kep_flags = (EV_ADD | EV_CLEAR);
+	            }
+	            else{
+                	kep_flags = (EV_ADD | EV_ENABLE | EV_DISPATCH);
+                }
+            }
+            else{
+                kep_flags = (EV_ADD | EV_ONESHOT);
+            }
         } else {
             kep_flags = EV_DELETE;
         }
 
-        EV_SET(kep, (uintptr_t) fd, filter, kep_flags, 0, 0, 0);
+        EV_SET(kep, (uintptr_t) setting_fd, filter, kep_flags, 0, 0, 0);
 
         /* Check if we've used the last one. If we have then submit them all */
-        if (kqoff == kqmax - 1) {
+        if (kep_flags == EV_DELETE || kqoff == kqmax - 1) {
             int ret;
 
-            ret = kevent(kq, kqlst, kqmax, nullptr, 0, &zero_timespec);
+            ret = kevent(kq, kqlst, kqoff+1, nullptr, 0, &zero_timespec);
             /* jdc -- someone needs to do error checking... */
 
             if (ret == -1) {
@@ -136,7 +187,9 @@ Comm::SelectLoopInit(void)
 
     kqmax = getdtablesize();
 
-    kqlst = (struct kevent *)xmalloc(sizeof(*kqlst) * kqmax);
+    kqlst_normal = (struct kevent *)xmalloc(sizeof(*kqlst_normal) * kqmax);
+    kqlst_low = (struct kevent *)xmalloc(sizeof(*kqlst_low) * kqmax);
+    kqlst_high = (struct kevent *)xmalloc(sizeof(*kqlst_high) * kqmax);
     zero_timespec.tv_sec = 0;
     zero_timespec.tv_nsec = 0;
 
@@ -211,16 +264,71 @@ Comm::DoSelect(int msec)
 
     poll_time.tv_nsec = (msec % 1000) * 1000000;
 
+    const double STARVATION_TH_Mbps_per_session = (double)10;
+    const double STARVATION_TH_sec = 1/(STARVATION_TH_Mbps_per_session/8*1024/64);
+    static double starvation_max = 0.0;
+    static double starvation_start_dtime = 0.0;
+
     for (;;) {
-        num = kevent(kq, kqlst, kqoff, ke, KE_LENGTH, &poll_time);
+        if ( starvation_start_dtime != 0.0 ){
+            const double starvation = current_dtime-starvation_start_dtime;
+            if ( starvation_max < starvation ){
+                starvation_max = (starvation_start_dtime != 0.0) ? starvation : 0;
+                debugs(98, 2, "starvation_max (ms): " << starvation_max*1000 << "/" << STARVATION_TH_sec*1000);
+                debugs(98, 6, "starved(ms): " << starvation*1000 << "/" << STARVATION_TH_sec*1000);
+            }
+            if ( starvation > STARVATION_TH_sec ){
+                if ( kqoff_high > 0 ){
+                    kevent(kq, kqlst_high, kqoff_high, nullptr, 0, &zero_timespec);
+                    kqoff_high = 0;
+                }
+
+                if ( kqoff_normal > 0 ){
+                    kevent(kq, kqlst_normal, kqoff_normal, nullptr, 0, &zero_timespec);
+                    kqoff_normal = 0;
+                }
+            }
+        }
+        
+        // temporarily unlock
+        SSL_MT_MUTEX_UNLOCK();
+
+		num = 0;
+
+		// Try high priority events first
+		if (kqoff_high > 0) {
+			num = kevent(kq, kqlst_high, kqoff_high, ke, KE_LENGTH, &zero_timespec);
+			if (num != 0) {
+				kqoff_high = 0;
+                if ( starvation_start_dtime == 0.0 ) starvation_start_dtime = current_dtime;
+			}
+		}
+
+		// Try normal priority events if no high priority events occurred
+		if (num == 0 && kqoff_normal > 0) {
+			num = kevent(kq, kqlst_normal, kqoff_normal, ke, KE_LENGTH, &zero_timespec);
+			if (num != 0) {
+				kqoff_normal = 0;
+                if ( starvation_start_dtime == 0.0 ) starvation_start_dtime = current_dtime;
+			}
+		}
+
+		// Fall back to low priority events if no high/normal events occurred
+		if (num == 0) {
+			num = kevent(kq, kqlst_low, kqoff_low, ke, KE_LENGTH, &poll_time);
+			kqoff_low = 0;
+            starvation_start_dtime = 0.0;
+		}
+		SSL_MT_MUTEX_LOCK();
         ++statCounter.select_loops;
-        kqoff = 0;
 
         if (num >= 0)
             break;
 
         if (ignoreErrno(errno))
             break;
+
+        debugs(98, 1, "kevent errno " << errno);
 
         getCurrentTime();
 
@@ -235,7 +343,7 @@ Comm::DoSelect(int msec)
         return Comm::OK;        /* No error.. */
 
     for (i = 0; i < num; ++i) {
-        int fd = (int) ke[i].ident;
+        const int fd = SSL_GET_REAL_FD((int) ke[i].ident);
         PF *hdl = nullptr;
         fde *F = &fd_table[fd];
 
@@ -249,13 +357,27 @@ Comm::DoSelect(int msec)
             if ((hdl = F->read_handler) != NULL) {
                 F->read_handler = nullptr;
                 hdl(fd, F->read_data);
+                SSL_MT_MUTEX_YIELD();
             }
         }
 
         if (ke[i].filter == EVFILT_WRITE) {
             if ((hdl = F->write_handler) != NULL) {
-                F->write_handler = nullptr;
-                hdl(fd, F->write_data);
+                const int FILTER_SIZE = (SSL_THREADED(fd) && fd != (int)ke[i].ident)
+                			? (fd_table[fd].ssl_th_info.ssl_max_write_size & 0xffffc000) : 0; // round to multiple of 16KB
+                if ( fd_table[fd].ssl && ke[i].data < FILTER_SIZE && !(ke[i].flags & EV_EOF) ){
+                    // skip unless write buffer has large enough space to reduce cpu load                	
+                    debugs(98, 6, "SSL ke[i].data: " << ke[i].data);
+                }
+                else{
+                    if ( fd_table[fd].ssl ){
+                        kq_update_events(fd, EVFILT_WRITE, NULL);
+                    }
+                    
+                    F->write_handler = nullptr;
+                    hdl(fd, F->write_data);
+                	SSL_MT_MUTEX_YIELD();
+                }
             }
         }
 
